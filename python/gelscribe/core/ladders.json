@@ -1,0 +1,1531 @@
+[
+  {
+    "aliases" : [
+      "26620",
+      "26621"
+    ],
+    "builtin" : true,
+    "catalog" : "26619",
+    "id" : "thermo-pageruler-plus",
+    "name" : "PageRuler Plus Prestained",
+    "notes" : "70 and 25 kDa orange, 10 kDa green, others blue. At 700 nm the blue bands fluoresce; the orange ones are dim. Apparent sizes depend on the gel and buffer, so pick yours.",
+    "referenceBands" : [
+      70,
+      25,
+      10
+    ],
+    "sizes" : [
+      250,
+      130,
+      100,
+      70,
+      55,
+      35,
+      25,
+      15,
+      10
+    ],
+    "source" : "https://assets.fishersci.com/TFS-Assets/LSG/manuals/MAN0011773_PgRuler_Plus_Prestain_Protein_Lad_UG.pdf",
+    "systems" : [
+      {
+        "id" : "tg-4-20",
+        "name" : "Tris-glycine 4–20%",
+        "sizes" : [
+          250,
+          130,
+          100,
+          70,
+          55,
+          35,
+          25,
+          15,
+          10
+        ]
+      },
+      {
+        "id" : "tg-8-16",
+        "name" : "Tris-glycine 8–16%",
+        "sizes" : [
+          250,
+          130,
+          100,
+          70,
+          55,
+          35,
+          25,
+          15,
+          10
+        ]
+      },
+      {
+        "id" : "tg-10-20",
+        "name" : "Tris-glycine 10–20%",
+        "sizes" : [
+          250,
+          130,
+          100,
+          70,
+          55,
+          35,
+          25,
+          15,
+          10
+        ]
+      },
+      {
+        "id" : "tg-8",
+        "name" : "Tris-glycine 8%",
+        "sizes" : [
+          250,
+          130,
+          100,
+          70,
+          55,
+          35,
+          25,
+          15
+        ]
+      },
+      {
+        "id" : "tg-10",
+        "name" : "Tris-glycine 10%",
+        "sizes" : [
+          250,
+          130,
+          100,
+          70,
+          55,
+          35,
+          25,
+          15
+        ]
+      },
+      {
+        "id" : "tg-12",
+        "name" : "Tris-glycine 12%",
+        "sizes" : [
+          250,
+          130,
+          100,
+          70,
+          55,
+          35,
+          25,
+          15,
+          10
+        ]
+      },
+      {
+        "id" : "tg-15",
+        "name" : "Tris-glycine 15%",
+        "sizes" : [
+          250,
+          130,
+          100,
+          70,
+          55,
+          35,
+          25,
+          15,
+          10
+        ]
+      },
+      {
+        "id" : "ta-3-8",
+        "name" : "NuPAGE Tris-acetate 3–8%",
+        "sizes" : [
+          205,
+          120,
+          85,
+          65,
+          50,
+          30,
+          25
+        ]
+      },
+      {
+        "id" : "ta-7",
+        "name" : "NuPAGE Tris-acetate 7%",
+        "sizes" : [
+          205,
+          120,
+          85,
+          65,
+          50,
+          30,
+          25
+        ]
+      },
+      {
+        "id" : "bt-4-12-mops",
+        "name" : "NuPAGE Bis-Tris 4–12%, MOPS",
+        "sizes" : [
+          185,
+          115,
+          80,
+          65,
+          50,
+          30,
+          25,
+          15,
+          10
+        ]
+      },
+      {
+        "id" : "bt-4-12-mes",
+        "name" : "NuPAGE Bis-Tris 4–12%, MES",
+        "sizes" : [
+          190,
+          115,
+          80,
+          70,
+          50,
+          30,
+          25,
+          15,
+          10
+        ]
+      },
+      {
+        "id" : "bt-10-mops",
+        "name" : "NuPAGE Bis-Tris 10%, MOPS",
+        "sizes" : [
+          185,
+          115,
+          80,
+          65,
+          50,
+          30,
+          25,
+          15
+        ]
+      },
+      {
+        "id" : "bt-10-mes",
+        "name" : "NuPAGE Bis-Tris 10%, MES",
+        "sizes" : [
+          190,
+          115,
+          80,
+          70,
+          50,
+          30,
+          25,
+          15,
+          10
+        ]
+      },
+      {
+        "id" : "bt-12-mops",
+        "name" : "NuPAGE Bis-Tris 12%, MOPS",
+        "sizes" : [
+          185,
+          115,
+          80,
+          65,
+          50,
+          30,
+          25,
+          15
+        ]
+      },
+      {
+        "id" : "bt-12-mes",
+        "name" : "NuPAGE Bis-Tris 12%, MES",
+        "sizes" : [
+          190,
+          115,
+          80,
+          70,
+          50,
+          30,
+          25,
+          15,
+          10
+        ]
+      }
+    ],
+    "unit" : "kDa",
+    "vendor" : "Thermo Scientific"
+  },
+  {
+    "aliases" : [
+      "26617",
+      "26618"
+    ],
+    "builtin" : true,
+    "catalog" : "26616",
+    "id" : "thermo-pageruler-prestained",
+    "name" : "PageRuler Prestained",
+    "notes" : "70 kDa orange (dim at 700 nm), 10 kDa green, others blue. Apparent sizes depend on the gel and buffer, so pick yours.",
+    "referenceBands" : [
+      70,
+      10
+    ],
+    "sizes" : [
+      180,
+      130,
+      100,
+      70,
+      55,
+      40,
+      35,
+      25,
+      15,
+      10
+    ],
+    "source" : "https://documents.thermofisher.com/TFS-Assets/LSG/manuals/MAN0011772_PgRuler_Prestain_Protein_Lad_UG.pdf",
+    "systems" : [
+      {
+        "id" : "tg-4-20",
+        "name" : "Tris-glycine 4–20%",
+        "sizes" : [
+          180,
+          130,
+          100,
+          70,
+          55,
+          40,
+          35,
+          25,
+          15,
+          10
+        ]
+      },
+      {
+        "id" : "tg-8-16",
+        "name" : "Tris-glycine 8–16%",
+        "sizes" : [
+          180,
+          130,
+          100,
+          70,
+          55,
+          40,
+          35,
+          25,
+          15,
+          10
+        ]
+      },
+      {
+        "id" : "tg-10-20",
+        "name" : "Tris-glycine 10–20%",
+        "sizes" : [
+          180,
+          130,
+          100,
+          70,
+          55,
+          40,
+          35,
+          25,
+          15,
+          10
+        ]
+      },
+      {
+        "id" : "tg-8",
+        "name" : "Tris-glycine 8%",
+        "sizes" : [
+          180,
+          130,
+          100,
+          70,
+          55,
+          40,
+          35,
+          25,
+          15
+        ]
+      },
+      {
+        "id" : "tg-10",
+        "name" : "Tris-glycine 10%",
+        "sizes" : [
+          180,
+          130,
+          100,
+          70,
+          55,
+          40,
+          35,
+          25,
+          15,
+          10
+        ]
+      },
+      {
+        "id" : "tg-12",
+        "name" : "Tris-glycine 12%",
+        "sizes" : [
+          180,
+          130,
+          100,
+          70,
+          55,
+          40,
+          35,
+          25,
+          15,
+          10
+        ]
+      },
+      {
+        "id" : "tg-15",
+        "name" : "Tris-glycine 15%",
+        "sizes" : [
+          180,
+          130,
+          100,
+          70,
+          55,
+          40,
+          35,
+          25,
+          15,
+          10
+        ]
+      },
+      {
+        "id" : "ta-3-8",
+        "name" : "NuPAGE Tris-acetate 3–8%",
+        "sizes" : [
+          150,
+          120,
+          85,
+          65,
+          50,
+          40,
+          30,
+          25
+        ]
+      },
+      {
+        "id" : "ta-7",
+        "name" : "NuPAGE Tris-acetate 7%",
+        "sizes" : [
+          150,
+          120,
+          85,
+          65,
+          50,
+          40,
+          30,
+          25
+        ]
+      },
+      {
+        "id" : "bt-4-12-mops",
+        "name" : "NuPAGE Bis-Tris 4–12%, MOPS",
+        "sizes" : [
+          140,
+          115,
+          80,
+          65,
+          50,
+          40,
+          30,
+          25,
+          15,
+          10
+        ]
+      },
+      {
+        "id" : "bt-4-12-mes",
+        "name" : "NuPAGE Bis-Tris 4–12%, MES",
+        "sizes" : [
+          140,
+          115,
+          80,
+          70,
+          50,
+          40,
+          30,
+          25,
+          15,
+          10
+        ]
+      },
+      {
+        "id" : "bt-10-mops",
+        "name" : "NuPAGE Bis-Tris 10%, MOPS",
+        "sizes" : [
+          140,
+          115,
+          80,
+          65,
+          50,
+          40,
+          30,
+          25,
+          15
+        ]
+      },
+      {
+        "id" : "bt-10-mes",
+        "name" : "NuPAGE Bis-Tris 10%, MES",
+        "sizes" : [
+          140,
+          115,
+          80,
+          70,
+          50,
+          40,
+          30,
+          25,
+          15,
+          10
+        ]
+      },
+      {
+        "id" : "bt-12-mops",
+        "name" : "NuPAGE Bis-Tris 12%, MOPS",
+        "sizes" : [
+          140,
+          115,
+          80,
+          65,
+          50,
+          40,
+          30,
+          25,
+          15
+        ]
+      },
+      {
+        "id" : "bt-12-mes",
+        "name" : "NuPAGE Bis-Tris 12%, MES",
+        "sizes" : [
+          140,
+          115,
+          80,
+          70,
+          50,
+          40,
+          30,
+          25,
+          15,
+          10
+        ]
+      }
+    ],
+    "unit" : "kDa",
+    "vendor" : "Thermo Scientific"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "26635",
+    "id" : "thermo-pageruler-nir",
+    "name" : "PageRuler Prestained NIR",
+    "notes" : "All bands labeled for the 700 nm channel.",
+    "referenceBands" : [
+
+    ],
+    "sizes" : [
+      250,
+      130,
+      95,
+      70,
+      55,
+      43,
+      34,
+      26,
+      15,
+      11
+    ],
+    "source" : "https://assets.fishersci.com/TFS-Assets/LSG/manuals/MAN0011747_PgRuler_Prestain_NIR_Protein_Lad_UG.pdf",
+    "systems" : [
+
+    ],
+    "unit" : "kDa",
+    "vendor" : "Thermo Scientific"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "26634",
+    "id" : "thermo-spectra-br",
+    "name" : "Spectra Multicolor Broad Range",
+    "notes" : "",
+    "referenceBands" : [
+
+    ],
+    "sizes" : [
+      260,
+      140,
+      100,
+      70,
+      50,
+      40,
+      35,
+      25,
+      15,
+      10
+    ],
+    "source" : "https://assets.fishersci.com/TFS-Assets/LSG/manuals/MAN0011774_Spectra_Multiclr_BrdRnge_Protein_Lad_UG.pdf",
+    "systems" : [
+
+    ],
+    "unit" : "kDa",
+    "vendor" : "Thermo Scientific"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "928-60000",
+    "id" : "licor-chameleon-duo",
+    "name" : "Chameleon Duo Pre-stained",
+    "notes" : "700 nm shows 160, 125, 90, 50, 30, 15, 8; 800 nm shows 260, 70, 38, 25. Mark the bands you can't see as ignored.",
+    "referenceBands" : [
+
+    ],
+    "sizes" : [
+      260,
+      160,
+      125,
+      90,
+      70,
+      50,
+      38,
+      30,
+      25,
+      15,
+      8
+    ],
+    "source" : "https://www.licorbio.com/support/contents/reagents/chameleon-pre-stained-protein-ladder/duo.html",
+    "systems" : [
+
+    ],
+    "unit" : "kDa",
+    "vendor" : "LI-COR"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "928-80000",
+    "id" : "licor-chameleon-800",
+    "name" : "Chameleon 800 Pre-stained",
+    "notes" : "",
+    "referenceBands" : [
+
+    ],
+    "sizes" : [
+      260,
+      125,
+      70,
+      38,
+      25,
+      8
+    ],
+    "source" : "https://www.licorbio.com/support/contents/reagents/chameleon-pre-stained-protein-ladder/800.html",
+    "systems" : [
+
+    ],
+    "unit" : "kDa",
+    "vendor" : "LI-COR"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "1610374",
+    "id" : "biorad-precision-plus-dual",
+    "name" : "Precision Plus Protein Dual Color",
+    "notes" : "75 and 25 kDa pink reference bands.",
+    "referenceBands" : [
+      75,
+      25
+    ],
+    "sizes" : [
+      250,
+      150,
+      100,
+      75,
+      50,
+      37,
+      25,
+      20,
+      15,
+      10
+    ],
+    "source" : "https://www.bio-rad.com/en-us/sku/1610374-precision-plus-protein-dual-color-standards-500-ul?ID=1610374",
+    "systems" : [
+
+    ],
+    "unit" : "kDa",
+    "vendor" : "Bio-Rad"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "1610373",
+    "id" : "biorad-precision-plus-blue",
+    "name" : "Precision Plus Protein All Blue",
+    "notes" : "",
+    "referenceBands" : [
+
+    ],
+    "sizes" : [
+      250,
+      150,
+      100,
+      75,
+      50,
+      37,
+      25,
+      20,
+      15,
+      10
+    ],
+    "source" : "https://www.bio-rad.com/en-us/sku/1610373-precision-plus-protein-all-blue-prestained-protein-standards?ID=1610373",
+    "systems" : [
+
+    ],
+    "unit" : "kDa",
+    "vendor" : "Bio-Rad"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "1610375",
+    "id" : "biorad-precision-plus-kaleidoscope",
+    "name" : "Precision Plus Protein Kaleidoscope",
+    "notes" : "Loading buffer contains bromophenol blue, which gives a dye front at 700 nm.",
+    "referenceBands" : [
+
+    ],
+    "sizes" : [
+      250,
+      150,
+      100,
+      75,
+      50,
+      37,
+      25,
+      20,
+      15,
+      10
+    ],
+    "source" : "https://www.bio-rad.com/webroot/web/pdf/lsr/literature/4110182.pdf",
+    "systems" : [
+
+    ],
+    "unit" : "kDa",
+    "vendor" : "Bio-Rad"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "LC5925",
+    "id" : "invitrogen-seeblue-plus2",
+    "name" : "SeeBlue Plus2 Pre-stained (Tris-glycine)",
+    "notes" : "Apparent sizes on Tris-glycine gels; they differ a lot on NuPAGE Bis-Tris MES/MOPS. Edit the list to your gel's chart.",
+    "referenceBands" : [
+
+    ],
+    "sizes" : [
+      250,
+      148,
+      98,
+      64,
+      50,
+      36,
+      22,
+      16,
+      6,
+      4
+    ],
+    "source" : "https://www.thermofisher.com/order/catalog/product/LC5925",
+    "systems" : [
+
+    ],
+    "unit" : "kDa",
+    "vendor" : "Invitrogen"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "26614",
+    "id" : "thermo-pageruler-unstained",
+    "name" : "PageRuler Unstained",
+    "notes" : "",
+    "referenceBands" : [
+
+    ],
+    "sizes" : [
+      200,
+      150,
+      120,
+      100,
+      85,
+      70,
+      60,
+      50,
+      40,
+      30,
+      25,
+      20,
+      15,
+      10
+    ],
+    "source" : "https://www.thermofisher.com/order/catalog/product/26614",
+    "systems" : [
+
+    ],
+    "unit" : "kDa",
+    "vendor" : "Thermo Scientific"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "928-70000",
+    "id" : "licor-chameleon-700",
+    "name" : "Chameleon 700 Pre-stained",
+    "notes" : "The 260 kDa band is visible by eye only; the others fluoresce at 700 nm.",
+    "referenceBands" : [
+
+    ],
+    "sizes" : [
+      260,
+      160,
+      90,
+      50,
+      30,
+      15,
+      8
+    ],
+    "source" : "https://www.licorbio.com/support/contents/reagents/chameleon-pre-stained-protein-ladder/700.html",
+    "systems" : [
+
+    ],
+    "unit" : "kDa",
+    "vendor" : "LI-COR"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "1610377",
+    "id" : "biorad-precision-plus-dual-xtra",
+    "name" : "Precision Plus Protein Dual Xtra",
+    "notes" : "",
+    "referenceBands" : [
+
+    ],
+    "sizes" : [
+      250,
+      150,
+      100,
+      75,
+      50,
+      37,
+      25,
+      20,
+      15,
+      10,
+      5,
+      2
+    ],
+    "source" : "https://www.bio-rad.com/en-us/sku/1610377-precision-plus-protein-dual-xtra-prestained-protein-standards?ID=1610377",
+    "systems" : [
+
+    ],
+    "unit" : "kDa",
+    "vendor" : "Bio-Rad"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "P7719",
+    "id" : "neb-p7719",
+    "name" : "Color Prestained Protein Standard, Broad Range",
+    "notes" : "",
+    "referenceBands" : [
+
+    ],
+    "sizes" : [
+      250,
+      180,
+      130,
+      95,
+      72,
+      55,
+      43,
+      34,
+      26,
+      17,
+      10
+    ],
+    "source" : "https://www.neb.com/en-us/products/p7719-color-prestained-protein-standard-broad-range-10-250-kda",
+    "systems" : [
+
+    ],
+    "unit" : "kDa",
+    "vendor" : "NEB"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "P7718",
+    "id" : "neb-p7718",
+    "name" : "Blue Prestained Protein Standard, Broad Range",
+    "notes" : "",
+    "referenceBands" : [
+
+    ],
+    "sizes" : [
+      250,
+      180,
+      130,
+      95,
+      72,
+      55,
+      43,
+      34,
+      26,
+      17,
+      11
+    ],
+    "source" : "https://www.neb.com/en-us/products/p7718-blue-prestained-protein-standard-broad-range-11-250-kda",
+    "systems" : [
+
+    ],
+    "unit" : "kDa",
+    "vendor" : "NEB"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "P7712",
+    "id" : "neb-p7712",
+    "name" : "Color Prestained Protein Standard, Broad Range (legacy)",
+    "notes" : "Discontinued; replaced by P7719.",
+    "referenceBands" : [
+
+    ],
+    "sizes" : [
+      245,
+      190,
+      135,
+      100,
+      80,
+      58,
+      46,
+      32,
+      25,
+      22,
+      17,
+      11
+    ],
+    "source" : "https://web.archive.org/web/20190825074152/https://www.neb.com/products/p7712-color-prestained-protein-standard-broad-range-11-245-kda",
+    "systems" : [
+
+    ],
+    "unit" : "kDa",
+    "vendor" : "NEB"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "LC5800",
+    "id" : "invitrogen-novex-sharp",
+    "name" : "Novex Sharp Pre-stained",
+    "notes" : "",
+    "referenceBands" : [
+
+    ],
+    "sizes" : [
+      260,
+      160,
+      110,
+      80,
+      60,
+      50,
+      40,
+      30,
+      20,
+      15,
+      10,
+      3.5
+    ],
+    "source" : "https://www.thermofisher.com/order/catalog/product/LC5800",
+    "systems" : [
+
+    ],
+    "unit" : "kDa",
+    "vendor" : "Invitrogen"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "LC5615",
+    "id" : "invitrogen-ibright-prestained",
+    "name" : "iBright Prestained",
+    "notes" : "",
+    "referenceBands" : [
+
+    ],
+    "sizes" : [
+      250,
+      130,
+      95,
+      80,
+      70,
+      55,
+      43,
+      34,
+      30,
+      26,
+      15,
+      11
+    ],
+    "source" : "https://www.thermofisher.com/order/catalog/product/LC5615",
+    "systems" : [
+
+    ],
+    "unit" : "kDa",
+    "vendor" : "Invitrogen"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "ab116028",
+    "id" : "abcam-ab116028",
+    "name" : "Prestained Protein Ladder, Broad",
+    "notes" : "",
+    "referenceBands" : [
+
+    ],
+    "sizes" : [
+      245,
+      180,
+      135,
+      100,
+      75,
+      63,
+      48,
+      35,
+      25,
+      20,
+      17,
+      11
+    ],
+    "source" : "https://www.abcam.com/en-us/products/standards/prestained-protein-ladder-broad-molecular-weight-10-245-kda-ab116028",
+    "systems" : [
+
+    ],
+    "unit" : "kDa",
+    "vendor" : "Abcam"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "N3232",
+    "id" : "neb-1kb",
+    "name" : "1 kb DNA Ladder",
+    "notes" : "3.0 kb is the bright reference band. The 0.5 kb band is a 517 + 500 bp doublet.",
+    "referenceBands" : [
+      3000
+    ],
+    "sizes" : [
+      10000,
+      8000,
+      6000,
+      5000,
+      4000,
+      3000,
+      2000,
+      1500,
+      1000,
+      500
+    ],
+    "source" : "https://www.neb.com/en-us/products/n3232-1-kb-dna-ladder",
+    "systems" : [
+
+    ],
+    "unit" : "bp",
+    "vendor" : "NEB"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "N3200",
+    "id" : "neb-1kb-plus",
+    "name" : "1 kb Plus DNA Ladder",
+    "notes" : "Formerly the 2-Log DNA Ladder; sizes read from NEB's 2-Log documentation. Not the same as Invitrogen's or Thermo's \"1 kb Plus\".",
+    "referenceBands" : [
+      3000,
+      1000,
+      500
+    ],
+    "sizes" : [
+      10000,
+      8000,
+      6000,
+      5000,
+      4000,
+      3000,
+      2000,
+      1500,
+      1200,
+      1000,
+      900,
+      800,
+      700,
+      600,
+      500,
+      400,
+      300,
+      200,
+      100
+    ],
+    "source" : "https://www.neb.com/en-us/products/n3200-1-kb-plus-dna-ladder",
+    "systems" : [
+
+    ],
+    "unit" : "bp",
+    "vendor" : "NEB"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "N0550",
+    "id" : "neb-quickload-purple-1kb-plus",
+    "name" : "Quick-Load Purple 1 kb Plus",
+    "notes" : "",
+    "referenceBands" : [
+      3000,
+      1000,
+      500
+    ],
+    "sizes" : [
+      10000,
+      8000,
+      6000,
+      5000,
+      4000,
+      3000,
+      2000,
+      1500,
+      1200,
+      1000,
+      900,
+      800,
+      700,
+      600,
+      500,
+      400,
+      300,
+      200,
+      100
+    ],
+    "source" : "https://www.neb.com/en-us/products/n0550-quick-load-purple-1-kb-plus-dna-ladder",
+    "systems" : [
+
+    ],
+    "unit" : "bp",
+    "vendor" : "NEB"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "N3231",
+    "id" : "neb-100bp",
+    "name" : "100 bp DNA Ladder",
+    "notes" : "The 500 bp band is a 517 + 500 bp doublet.",
+    "referenceBands" : [
+      1000,
+      500
+    ],
+    "sizes" : [
+      1517,
+      1200,
+      1000,
+      900,
+      800,
+      700,
+      600,
+      500,
+      400,
+      300,
+      200,
+      100
+    ],
+    "source" : "https://www.neb.com/en-us/products/n3231-100-bp-dna-ladder",
+    "systems" : [
+
+    ],
+    "unit" : "bp",
+    "vendor" : "NEB"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "N3236",
+    "id" : "neb-50bp",
+    "name" : "50 bp DNA Ladder",
+    "notes" : "",
+    "referenceBands" : [
+      500,
+      200
+    ],
+    "sizes" : [
+      1350,
+      916,
+      766,
+      700,
+      650,
+      600,
+      550,
+      500,
+      450,
+      400,
+      350,
+      300,
+      250,
+      200,
+      150,
+      100,
+      50
+    ],
+    "source" : "https://www.neb.com/en-us/products/n3236-50-bp-dna-ladder",
+    "systems" : [
+
+    ],
+    "unit" : "bp",
+    "vendor" : "NEB"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "SM0311",
+    "id" : "thermo-generuler-1kb",
+    "name" : "GeneRuler 1 kb",
+    "notes" : "",
+    "referenceBands" : [
+      6000,
+      3000,
+      1000
+    ],
+    "sizes" : [
+      10000,
+      8000,
+      6000,
+      5000,
+      4000,
+      3500,
+      3000,
+      2500,
+      2000,
+      1500,
+      1000,
+      750,
+      500,
+      250
+    ],
+    "source" : "https://documents.thermofisher.com/TFS-Assets/LSG/manuals/MAN0013004_GeneRuler_1kb_DNALadder_250ug_UG.pdf",
+    "systems" : [
+
+    ],
+    "unit" : "bp",
+    "vendor" : "Thermo Scientific"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "SM1331",
+    "id" : "thermo-generuler-1kb-plus",
+    "name" : "GeneRuler 1 kb Plus",
+    "notes" : "",
+    "referenceBands" : [
+      5000,
+      1500,
+      500
+    ],
+    "sizes" : [
+      20000,
+      10000,
+      7000,
+      5000,
+      4000,
+      3000,
+      2000,
+      1500,
+      1000,
+      700,
+      500,
+      400,
+      300,
+      200,
+      75
+    ],
+    "source" : "https://documents.thermofisher.com/TFS-Assets/LSG/manuals/MAN0013047_GeneRuler_1kb_Plus_DNALadder_250ug_UG.pdf",
+    "systems" : [
+
+    ],
+    "unit" : "bp",
+    "vendor" : "Thermo Scientific"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "SM0321",
+    "id" : "thermo-generuler-100bp-plus",
+    "name" : "GeneRuler 100 bp Plus",
+    "notes" : "",
+    "referenceBands" : [
+
+    ],
+    "sizes" : [
+      3000,
+      2000,
+      1500,
+      1200,
+      1000,
+      900,
+      800,
+      700,
+      600,
+      500,
+      400,
+      300,
+      200,
+      100
+    ],
+    "source" : "https://assets.fishersci.com/TFS-Assets/LSG/manuals/MAN0013008_GeneRuler_100bp_Plus_DNALadder_50ug_UG.pdf",
+    "systems" : [
+
+    ],
+    "unit" : "bp",
+    "vendor" : "Thermo Scientific"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "SM0371",
+    "id" : "thermo-generuler-50bp",
+    "name" : "GeneRuler 50 bp",
+    "notes" : "",
+    "referenceBands" : [
+
+    ],
+    "sizes" : [
+      1000,
+      900,
+      800,
+      700,
+      600,
+      500,
+      400,
+      300,
+      250,
+      200,
+      150,
+      100,
+      50
+    ],
+    "source" : "https://documents.thermofisher.com/TFS-Assets/LSG/manuals/MAN0013016_GeneRuler_50bp_DNALadder_50ug_UG.pdf",
+    "systems" : [
+
+    ],
+    "unit" : "bp",
+    "vendor" : "Thermo Scientific"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "SM0331",
+    "id" : "thermo-generuler-mix",
+    "name" : "GeneRuler DNA Ladder Mix",
+    "notes" : "",
+    "referenceBands" : [
+
+    ],
+    "sizes" : [
+      10000,
+      8000,
+      6000,
+      5000,
+      4000,
+      3500,
+      3000,
+      2500,
+      2000,
+      1500,
+      1200,
+      1000,
+      900,
+      800,
+      700,
+      600,
+      500,
+      400,
+      300,
+      200,
+      100
+    ],
+    "source" : "https://documents.thermofisher.com/TFS-Assets/LSG/manuals/MAN0013012_GeneRuler_DNALadder_250ug_UG.pdf",
+    "systems" : [
+
+    ],
+    "unit" : "bp",
+    "vendor" : "Thermo Scientific"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "10787018",
+    "id" : "invitrogen-1kb-plus",
+    "name" : "1 Kb Plus DNA Ladder",
+    "notes" : "",
+    "referenceBands" : [
+
+    ],
+    "sizes" : [
+      15000,
+      10000,
+      8000,
+      7000,
+      6000,
+      5000,
+      4000,
+      3000,
+      2000,
+      1500,
+      1000,
+      850,
+      650,
+      500,
+      400,
+      300,
+      200,
+      100
+    ],
+    "source" : "https://assets.fishersci.com/TFS-Assets/LSG/manuals/1Kb_Plus_DNA_ladder_man.pdf",
+    "systems" : [
+
+    ],
+    "unit" : "bp",
+    "vendor" : "Invitrogen"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "10488091",
+    "id" : "invitrogen-egel-1kb-plus-express",
+    "name" : "E-Gel 1 Kb Plus Express",
+    "notes" : "",
+    "referenceBands" : [
+
+    ],
+    "sizes" : [
+      5000,
+      3000,
+      2000,
+      1500,
+      1000,
+      750,
+      500,
+      300,
+      100
+    ],
+    "source" : "https://documents.thermofisher.com/TFS-Assets/LSG/manuals/egel_1kb_plus_express_ladder_man.pdf",
+    "systems" : [
+
+    ],
+    "unit" : "bp",
+    "vendor" : "Invitrogen"
+  },
+  {
+    "aliases" : [
+
+    ],
+    "builtin" : true,
+    "catalog" : "G5711",
+    "id" : "promega-1kb",
+    "name" : "1 kb DNA Ladder",
+    "notes" : "Sizes read from a Promega application note, not the product datasheet; check your lot's datasheet.",
+    "referenceBands" : [
+
+    ],
+    "sizes" : [
+      10000,
+      8000,
+      6000,
+      5000,
+      4000,
+      3000,
+      2500,
+      2000,
+      1500,
+      1000,
+      750,
+      500,
+      250
+    ],
+    "source" : "https://www.promega.com/-/media/files/resources/application-notes/dna-purification/an335---large-dna-size-selection-with-the-pronex-size-selective-purification-system.pdf",
+    "systems" : [
+
+    ],
+    "unit" : "bp",
+    "vendor" : "Promega"
+  }
+]

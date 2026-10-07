@@ -1,0 +1,8 @@
+# GelScribe (Python version). Needs Python 3.11 or newer; runs on Windows, macOS and Linux.
+PySide6-Essentials>=6.6   # Qt: windows, drawing, PDF
+numpy>=2.0
+scipy>=1.13               # band snapping, resampling
+Pillow>=10.0              # PNG and JPEG
+tifffile>=2024.1.30       # TIFF, including ImageJ metadata
+imagecodecs>=2024.1.1     # LZW and other TIFF compression (tifffile needs it to read and write them)
+pikepdf>=8.0              # puts the original gel samples into exported PDFs

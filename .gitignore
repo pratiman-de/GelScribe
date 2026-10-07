@@ -1,0 +1,27 @@
+# Mac app (mac/)
+mac/.build/
+mac/.swiftpm/
+mac/GelScribe.app/
+*.dSYM/
+# The gel some tests use stays local; those tests skip without it.
+mac/TestData/
+mac/out/
+
+# Python version (python/): what setting it up leaves behind
+python/.venv/
+python/python.txt
+python/requirements.used
+python/GelScribe.lnk
+__pycache__/
+*.pyc
+.pytest_cache/
+
+.DS_Store
+# Screenshots dropped here to report bugs
+*.heic
+
+# A clean copy made for uploading to GitHub by hand
+GitHub uploads/
+
+# Built app zips for GitHub Releases (not part of the code)
+Release/

@@ -1,0 +1,4 @@
+# cmd.exe needs Windows line endings in batch files, and sh needs Unix ones in shell scripts
+*.bat text eol=crlf
+*.sh text eol=lf
+*.command text eol=lf
