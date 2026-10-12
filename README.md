@@ -15,6 +15,12 @@ records what was done.
 **Mac** (macOS 26 or later, Apple silicon): download `GelScribe.zip` from [Releases](../../releases), unzip it and
 drag GelScribe into Applications. The app isn't notarized, so macOS blocks the first launch. Open it once, then go to
 System Settings › Privacy & Security and click Open Anyway.
+If macOS says GelScribe "is damaged and can't be opened", it isn't: that's how recent macOS reacts to downloaded
+apps that aren't notarized. Run this once in Terminal, then open it as usual:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/GelScribe.app
+```
 
 **Windows, Linux, and Intel or older Macs**: use the Python version, which has the same tools and reads the same
 project files. There's nothing to install from here: on this page click Code › Download ZIP, unzip it, and open the
