@@ -12,8 +12,8 @@ records what was done.
 
 ## Download
 
-**Mac** (macOS 26 or later, Apple silicon): download `GelScribe.zip` from [Releases](../../releases), unzip it and
-drag GelScribe into Applications. The app isn't notarized, so macOS blocks the first launch. Open it once, then go to
+**Mac** (macOS 26 or later, Apple silicon): download `GelScribe.dmg` from [Releases](../../releases), open it and
+drag GelScribe into Applications (or download `GelScribe.zip` and unzip it). The app isn't notarized, so macOS blocks the first launch. Open it once, then go to
 System Settings › Privacy & Security and click Open Anyway.
 If macOS says GelScribe "is damaged and can't be opened", it isn't: that's how recent macOS reacts to downloaded
 apps that aren't notarized. Run this once in Terminal, then open it as usual:
