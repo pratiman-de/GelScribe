@@ -103,7 +103,8 @@ echo Inno Setup didn't make GelScribe-Setup.exe (the reason is above). The zip w
 exit /b 0
 
 :findpython
-rem the first Python 3.11 to 3.14 found: python.org's py launcher (newest wanted first), PATH, then conda
+rem the first Python 3.11 to 3.14 found: python.org's py launcher (newest wanted first), then PATH. Never Anaconda or
+rem Miniconda: their own copies of Windows DLLs clash with Qt's, and the built app then can't start.
 call :try py -3.13
 call :try py -3.12
 call :try py -3.14
@@ -111,19 +112,17 @@ call :try py -3.11
 call :try py -3
 call :try python
 call :try python3
-if defined CONDA_PREFIX call :try "%CONDA_PREFIX%\python.exe"
-for %%D in ("%USERPROFILE%\miniconda3" "%USERPROFILE%\anaconda3" "%USERPROFILE%\miniforge3" "%LOCALAPPDATA%\miniconda3" "%ProgramData%\miniconda3") do call :try "%%~D\python.exe"
 exit /b 0
 
 :try
 if defined PY exit /b 0
-%* -c "import sys; sys.exit(0 if (3, 11) <= sys.version_info[:2] <= (3, 14) else 1)" >nul 2>nul && set "PY=%*"
+%* -c "import sys, os; ok = (3, 11) <= sys.version_info[:2] <= (3, 14) and 'conda' not in sys.version.lower() and not os.path.isdir(os.path.join(sys.base_prefix, 'conda-meta')); sys.exit(0 if ok else 1)" >nul 2>nul && set "PY=%*"
 exit /b 0
 
 :checkvenv
-rem a build\venv that no longer runs (its Python was uninstalled) or is too old or new is made again
-"build\venv\Scripts\python.exe" -c "import sys; sys.exit(0 if (3, 11) <= sys.version_info[:2] <= (3, 14) else 1)" >nul 2>nul && exit /b 0
-echo The Python in build\venv doesn't work any more, making it again.
+rem a build\venv that no longer runs, is too old or new, or was made from Anaconda or Miniconda is made again
+"build\venv\Scripts\python.exe" -c "import sys, os; ok = (3, 11) <= sys.version_info[:2] <= (3, 14) and 'conda' not in sys.version.lower() and not os.path.isdir(os.path.join(sys.base_prefix, 'conda-meta')); sys.exit(0 if ok else 1)" >nul 2>nul && exit /b 0
+echo The Python in build\venv can't be used (it was made from Anaconda or Miniconda, or no longer runs), making it again.
 rmdir /s /q "build\venv"
 exit /b 0
 
@@ -133,7 +132,8 @@ if /i not "%~1"=="/nopause" pause
 exit /b 0
 
 :nopython
-echo No Python 3.11 to 3.14 was found (looked for python.org's py launcher, python on PATH, and conda).
+echo No Python 3.11 to 3.14 from python.org was found. Anaconda and Miniconda can't build the .exe: their own copies
+echo of Windows DLLs clash with Qt's, so the app wouldn't start.
 echo Get Python 3.13 from https://www.python.org/downloads/ and on the installer's first screen tick
 echo "Add python.exe to PATH". Your own Pythons are only read, never changed. Then double-click build-exe.bat again.
 goto stop
