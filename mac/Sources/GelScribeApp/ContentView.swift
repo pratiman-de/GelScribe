@@ -243,8 +243,9 @@ struct AppCommands: Commands {
         let _ = ImageOpener.shared.ready(newDocument)
         CommandGroup(replacing: .appInfo) {
             // the standard About window (name, version and copyright from Info.plist, Credits.rtf under them),
-            // without the build number in parentheses: "Version 0.1"
+            // without the build number in parentheses: "Version 0.1.1"
             Button("About GelScribe") { NSApp.orderFrontStandardAboutPanel(options: [.version: ""]) }
+            Button("Check for Updates…") { UpdateNotice.shared.checkNow() }
         }
         CommandGroup(after: .newItem) {
             Button("New Gel with These Labels…") { newGelWithLabels() }

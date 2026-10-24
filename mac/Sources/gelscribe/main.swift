@@ -45,6 +45,7 @@ usage:
   gelscribe presets                           list ladder presets
   gelscribe mcp                               MCP server on stdin/stdout, working on project files
   gelscribe verify PROJECT                    check the images still match their recorded SHA-256, and can be read
+  gelscribe --version                         the version
   gelscribe help                              this text
 
 Positions are image pixels from the top-left corner, x to the right and y down (in the turned and rotated image).
@@ -740,6 +741,14 @@ func runVerify(_ words: [String]) throws {
 
 // MARK: main
 
+/// The version make-app.sh wrote into the app's Info.plist (this binary sits in GelScribe.app/Contents/Helpers).
+func appVersion() -> String {
+    let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+    let plist = exe.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Info.plist")
+    if let d = NSDictionary(contentsOf: plist), let v = d["CFBundleShortVersionString"] as? String { return v }
+    return "unknown (not run from GelScribe.app)"
+}
+
 let allWords = Array(CommandLine.arguments.dropFirst())
 guard let cmd = allWords.first else { usage() }
 let rest = Array(allWords.dropFirst())
@@ -768,6 +777,10 @@ do {
                 print("  \(s.id)\t\(s.name)\t\(s.sizes.map { FigureLayoutEngine.formatSize($0) }.joined(separator: " "))")
             }
         }
+
+    case "version", "--version", "-v":
+        CLIArgs(rest).nothingElse()
+        print(appVersion())
 
     case "help", "-h", "--help":
         print(usageText, terminator: "")

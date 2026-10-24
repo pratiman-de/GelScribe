@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 from .. import __version__
 from ..core.package import GelPackage, PROJECT_FILE, is_image_path, is_project_path
 from . import keys, settings, theme
+from .updates import UpdateController
 from .window import IMAGE_FILTER, MainWindow, app_icon
 from .workspace import Workspace
 
@@ -23,6 +24,7 @@ class Controller:
         self.windows: list[MainWindow] = []
         self.settings = settings()
         self._settings_dialog = None
+        self.updates = UpdateController(self.settings, self.front_window)
         keys.guard_altgr(app)
 
     # windows
@@ -37,6 +39,14 @@ class Controller:
         w.raise_()
         w.activateWindow()
         return w
+
+    def front_window(self) -> Optional[MainWindow]:
+        active = self.app.activeWindow()
+        return active if active in self.windows else (self.windows[-1] if self.windows else None)
+
+    def check_for_updates(self):
+        """Help > Check for Updates...: now, even when the automatic check is off."""
+        self.updates.check(manual=True)
 
     def closed(self, w: MainWindow):
         if w in self.windows:
@@ -181,4 +191,5 @@ def run(argv: Optional[list[str]] = None) -> int:
             ctl.open_path(f)
     if not ctl.windows:
         ctl.new_window()
+    ctl.updates.check()   # in the background, at most once a day, only when it is on
     return app.exec()

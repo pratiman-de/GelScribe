@@ -55,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        UpdateNotice.shared.checkOnLaunch()   // background, at most once a day, silent unless a newer release exists
         Task { await LLMAccess.shared.apply() }   // only listens if the user turned LLM access on
         // double-clicking an empty part of a document window's title bar fills the screen (not full-screen mode);
         // doing it again puts the window back as it was
@@ -83,14 +84,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @Observable
 final class SettingsNavigation {
     static let shared = SettingsNavigation()
-    var tab = LaunchOptions.shared.value("--settings").flatMap { ["shortcuts", "llm"].contains($0) ? $0 : nil } ?? "shortcuts"
+    var tab = LaunchOptions.shared.value("--settings").flatMap { ["shortcuts", "llm", "general"].contains($0) ? $0 : nil } ?? "shortcuts"
 }
 
-/// Settings: keyboard shortcuts, then LLM access.
+/// Settings: general (updates), keyboard shortcuts, then LLM access.
 struct SettingsTabs: View {
     @Bindable private var nav = SettingsNavigation.shared
     var body: some View {
         TabView(selection: $nav.tab) {
+            GeneralSettings().tabItem { Label("General", systemImage: "gearshape") }.tag("general")
             ShortcutsSettings().tabItem { Label("Shortcuts", systemImage: "keyboard") }.tag("shortcuts")
             SettingsView().tabItem { Label("LLM Access", systemImage: "sparkle") }.tag("llm")
         }

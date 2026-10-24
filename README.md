@@ -27,6 +27,9 @@ project files. There's nothing to install from here: on this page click Code ›
 `python` folder. Then open `GelScribe.bat` on Windows, `GelScribe.command` on a Mac or `GelScribe.sh` on Linux
 (Python 3.11 to 3.14). [Setting up the Python version](#setting-up-the-python-version).
 
+GelScribe checks GitHub once a day for a newer release and offers a link to it. It sends nothing but that request,
+and you can turn it off in Settings.
+
 ## How it works
 
 The [tutorial](docs/tutorial.md) goes through one blot from scan to figure, with a screenshot for each step. The

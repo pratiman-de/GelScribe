@@ -9,6 +9,7 @@ CONFIG="${1:-release}"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 BUILD="$ROOT/.build/$CONFIG"
 APP="$ROOT/GelScribe.app"
+VERSION="0.1.1"   # the one place the version is set; the app and `gelscribe --version` read it from Info.plist
 
 swift build -c "$CONFIG" --product GelScribeApp
 swift build -c "$CONFIG" --product gelscribe
@@ -36,7 +37,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>local.gelscribe</string>
   <key>CFBundleExecutable</key><string>GelScribe</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>NSHumanReadableCopyright</key><string>Copyright © 2026 Pratiman De</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>

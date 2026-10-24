@@ -384,6 +384,8 @@ class MainWindow(QMainWindow):
         act(t, "Brightness && Contrast…", ws.show_brightness_contrast, key="brightnessContrast")
 
         hm = mb.addMenu("&Help")
+        act(hm, "Check for Updates…", ctl.check_for_updates)
+        hm.addSeparator()
         act(hm, "About GelScribe", self.about)
         keys.store().changed.connect(self.apply_keys)
         self.apply_keys()

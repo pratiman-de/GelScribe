@@ -9,7 +9,7 @@ from typing import Callable, Optional
 
 from PySide6.QtCore import QEvent, QKeyCombination, QObject, Qt, Signal
 from PySide6.QtGui import QKeyEvent, QKeySequence
-from PySide6.QtWidgets import (QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit,
+from PySide6.QtWidgets import (QCheckBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit,
                                QPushButton, QScrollArea, QTabWidget, QTextEdit, QVBoxLayout, QWidget)
 
 from . import settings
@@ -270,12 +270,30 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("Settings")
         self.resize(600, 680)
         tabs = QTabWidget()
+        tabs.addTab(self._general(), "General")
         tabs.addTab(self._shortcuts(), "Shortcuts")
         v = QVBoxLayout(self)
         v.setContentsMargins(14, 14, 14, 14)
         v.addWidget(tabs)
         store().changed.connect(self.refresh)
         self.refresh()
+
+    def _general(self) -> QWidget:
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(14, 14, 14, 14)
+        self.update_check = QCheckBox("Check for updates when GelScribe opens")
+        self.update_check.setChecked(settings().value("updateCheckEnabled", True, type=bool))
+        self.update_check.toggled.connect(lambda on: settings().setValue("updateCheckEnabled", bool(on)))
+        v.addWidget(self.update_check)
+        v.addWidget(label("Once a day GelScribe asks GitHub whether a newer release exists and offers a link. It "
+                          "sends nothing but that request.", "caption"))
+        v.addStretch(1)
+        return page
+
+    def showEvent(self, e):
+        self.update_check.setChecked(settings().value("updateCheckEnabled", True, type=bool))   # "Don't show this again"
+        super().showEvent(e)
 
     def _shortcuts(self) -> QWidget:
         page = QWidget()
