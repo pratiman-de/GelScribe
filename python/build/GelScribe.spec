@@ -85,7 +85,7 @@ def analysis(script):
 app_a = analysis("entry_app.py")
 cli_a = analysis("entry_cli.py")
 for a in (app_a, cli_a):
-    a.binaries = trim(a.binaries)
+    # Qt's libraries are all kept: dropping some to save space left the Windows display plugin unable to start
     a.datas = trim(a.datas)
 
 version = None
