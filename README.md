@@ -22,10 +22,11 @@ apps that aren't notarized. Run this once in Terminal, then open it as usual:
 xattr -dr com.apple.quarantine /Applications/GelScribe.app
 ```
 
-**Windows**: download `GelScribe-Windows.zip` from [Releases](../../releases) when it's there, unzip it and run
-`GelScribe.exe`. There's nothing to install. Windows SmartScreen shows "Windows protected your PC" the first time,
-because the program isn't signed: click More info › Run anyway. `gelscribe-cli.exe` in the same folder is the
-[command-line tool](#command-line).
+**Windows**: download `GelScribe-Setup.exe` from [Releases](../../releases) when it's there and run it. It installs
+GelScribe for you alone without admin rights, or for everyone if you choose that, and adds a Start menu shortcut.
+Or download `GelScribe-Windows.zip`, unzip it and run `GelScribe.exe` from the unzipped folder, with nothing to install.
+Windows SmartScreen shows "Windows protected your PC" the first time, because the program isn't signed: click
+More info › Run anyway. `gelscribe-cli.exe` in the same folder is the [command-line tool](#command-line).
 
 **Linux, Intel or older Macs, and Windows without the zip**: use the Python version, which has the same tools and reads the same
 project files. There's nothing to install from here: on this page click Code › Download ZIP, unzip it, and open the
@@ -235,6 +236,10 @@ python -m pytest
 On a Windows PC, double-click `python\build-exe.bat`. It makes its own Python in `python\build\venv` (from a Python 3.11
 to 3.14 you already have, which it doesn't change), installs the requirements and PyInstaller there, and builds
 `python\dist\GelScribe-Windows.zip`. The first build takes a few minutes. The recipe is `python\build\GelScribe.spec`.
+
+If [Inno Setup 6](https://jrsoftware.org/isdl.php) (free, 6.3 or newer) is installed, the same script also makes the
+installer, `python\dist\GelScribe-Setup.exe`, from `python\build\GelScribe.iss`. Without Inno Setup it says so and
+still makes the zip.
 
 ## Repository
 

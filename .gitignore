@@ -33,3 +33,7 @@ Release/
 
 # PyInstaller leftovers
 *.pyz
+
+# Small folder for building the Windows .exe
+Windows exe build/
+Windows exe build.zip
