@@ -187,9 +187,20 @@ struct GelSwitcher: View {
     @Bindable var ws: Workspace
 
     var body: some View {
+        // one glass pill like the other floating controls; with more gels than the width allows, the segments scroll sideways in it
+        ViewThatFits(in: .horizontal) {
+            segments
+            ScrollView(.horizontal, showsIndicators: false) { segments }
+        }
+        .padding(4)
+        .panelGlass(in: Capsule())
+        .help("The stacked figure, or one gel on its own (double-click a gel to open it). Lane dividers are set on the gel marked lanes.")
+    }
+
+    private var segments: some View {
         let order = ws.project.stackOrder
-        // one glass pill like the other floating controls, the chosen view filled with the accent colour
-        HStack(spacing: 2) {
+        // the chosen view filled with the accent colour
+        return HStack(spacing: 2) {
             segment(selected: !ws.showsGel, action: { ws.showFigure() }) { Text("Figure") }
             ForEach(Array(order.enumerated()), id: \.offset) { n, k in
                 segment(selected: ws.showsGel && ws.activeStrip == k, action: { ws.showGel(k) }) {
@@ -204,14 +215,12 @@ struct GelSwitcher: View {
                 }
             }
         }
-        .padding(4)
-        .panelGlass(in: Capsule())
-        .help("The stacked figure, or one gel on its own (double-click a gel to open it). Lane dividers are set on the gel marked lanes.")
     }
 
     private func segment<L: View>(selected: Bool, action: @escaping () -> Void, @ViewBuilder label: () -> L) -> some View {
         Button(action: action) {
             label()
+                .lineLimit(1).fixedSize()
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(selected ? Color.white : Color.primary.opacity(0.75))
                 .padding(.horizontal, 12).padding(.vertical, 5)

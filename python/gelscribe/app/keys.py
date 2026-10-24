@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QFrame, QGridLayout, QHBoxLay
                                QPushButton, QScrollArea, QTabWidget, QTextEdit, QVBoxLayout, QWidget)
 
 from . import settings
-from .editors import button, label
+from .editors import button, label, text_width
 from .workspace import TOOLS
 
 TOOLS_SECTION = "Tools (a single key, anywhere except while typing)"
@@ -193,7 +193,7 @@ class Recorder(QPushButton):
         super().__init__()
         self.sid, self.note = sid, note
         self.recording = False
-        self.setMinimumWidth(150)
+        self.setMinimumWidth(max(150, text_width(self, "Ctrl+Shift+Alt+Backspace", pad=24)))
         self.clicked.connect(self._toggle)
         self.refresh()
 

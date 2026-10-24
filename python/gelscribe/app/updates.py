@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QDialog, QHBoxLayout, QMessageBox, QVBoxLayout, QW
 
 from .. import __version__
 from ..core import updates
-from .editors import button, label
+from .editors import button, label, text_width
 
 
 class UpdateNotice(QDialog):
@@ -33,9 +33,11 @@ class UpdateNotice(QDialog):
         if notes:
             text += "\n\n" + notes
         self.text = label(text, "caption")
+        self.text.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)   # spare room goes below, not above
         v.addWidget(self.text)
         row = QHBoxLayout()
         self.off_button = button("Don't show this again", lambda: (on_off(), self.close()), "link")
+        self.off_button.setMinimumWidth(text_width(self.off_button, "Don't show this again", pad=8))
         self.later_button = button("Later", self.close)
         self.download_button = button("Download", self.download)
         self.download_button.setDefault(True)
@@ -45,6 +47,13 @@ class UpdateNotice(QDialog):
         row.addWidget(self.download_button)
         v.addLayout(row)
         self.setMinimumWidth(380)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        # tall enough for the wrapped notes, and a line to spare: at a fractional scale (Windows at 150%) a line can wrap
+        # a word earlier than the height was worked out for
+        self.text.setMinimumHeight(self.text.heightForWidth(self.text.width()) + self.text.fontMetrics().lineSpacing())
+        self.adjustSize()
 
     def download(self):
         QDesktopServices.openUrl(QUrl(self.release.url))   # the release page, in the browser

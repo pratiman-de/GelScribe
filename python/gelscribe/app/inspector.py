@@ -9,14 +9,15 @@ from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFontDatabase, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QGridLayout,
                                QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QMenu, QPlainTextEdit,
-                               QPushButton, QScrollArea, QSlider, QSpinBox, QVBoxLayout, QWidget)
+                               QPushButton, QScrollArea, QSlider, QSpinBox, QStyle, QVBoxLayout, QWidget)
 
 from ..core import labels as ql
 from ..core import ladders as lib
 from ..core.image import ImageError
 from ..core.model import GelProject, TEXT_KINDS, format_size, parse_separator, separator_rgb
 from . import theme
-from .editors import SizeStepper, button, label
+from .editors import (ElidedButton, FitDoubleSpinBox, SizeStepper, button, fit_width, label,
+                      text_width)
 from .workspace import Workspace
 
 TABS = [("labels", "Aa"), ("ladder", "Ladder"), ("names", "Names"), ("figure", "Figure"), ("export", "Export")]
@@ -29,7 +30,8 @@ def section(title: str) -> QLabel:
     return label(title.upper(), "section")
 
 
-def hrow(*widgets, stretch_at: Optional[int] = None, spacing: int = 6) -> QWidget:
+def hrow(*widgets, grow: Optional[int] = None, spacing: int = 6) -> QWidget:
+    """Widgets side by side; \"stretch\" is a gap that takes the spare room, or the widget at index `grow` takes it."""
     w = QWidget()
     r = QHBoxLayout(w)
     r.setContentsMargins(0, 0, 0, 0)
@@ -38,7 +40,7 @@ def hrow(*widgets, stretch_at: Optional[int] = None, spacing: int = 6) -> QWidge
         if x == "stretch":
             r.addStretch(1)
         elif isinstance(x, QWidget):
-            r.addWidget(x)
+            r.addWidget(x, 1 if i == grow else 0)
     return w
 
 
@@ -108,11 +110,11 @@ class DragSlider(QWidget):
         r = QHBoxLayout(self)
         r.setContentsMargins(0, 0, 0, 0)
         self.title = QLabel(title)
-        self.title.setFixedWidth(78)
+        fit_width(self.title, title, floor=78, chrome=0)
         self.slider = QSlider(Qt.Orientation.Horizontal)
         self.slider.setRange(0, max(1, int(round((hi - lo) / step))))
         self.value_label = label("", "caption")
-        self.value_label.setFixedWidth(60)
+        fit_width(self.value_label, fmt % lo, fmt % hi, fmt % (lo + (hi - lo) / 3), floor=60, chrome=4)
         self.value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         r.addWidget(self.title)
         r.addWidget(self.slider, 1)
@@ -213,8 +215,9 @@ class Panel(QWidget):
 # ---------------------------------------------------------------------------------------------------- Aa
 
 
-class AngleSpin(QDoubleSpinBox):
+class AngleSpin(FitDoubleSpinBox):
     """Degrees, typed: 45, not 45.0."""
+    samples = ("-360.5°",)
 
     def textFromValue(self, v: float) -> str:
         return f"{v:g}"
@@ -257,7 +260,6 @@ class LabelsPanel(Panel):
         self.angle.setDecimals(1)
         self.angle.setSingleStep(1)
         self.angle.setSuffix("°")
-        self.angle.setFixedWidth(64)
         self.angle.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.NoButtons)
         self.angle.setToolTip("0° is level, 90° is straight up. Press Enter to apply.")
         self.angle.editingFinished.connect(lambda: ws.set_label_angle(self.angle.value())
@@ -446,20 +448,21 @@ class LabelsPanel(Panel):
         if row.type == "groups":
             for gi, g in enumerate(row.groups):
                 tf = QLineEdit(g.text)
-                tf.setFixedWidth(84)
+                tf.setMinimumWidth(84)
                 tf.editingFinished.connect(lambda gi=gi, tf=tf: ws.update_group(ri, gi, text=tf.text())
                                            if tf.text() != ws.project.rows[ri].groups[gi].text else None)
                 a, b = QSpinBox(), QSpinBox()
                 for s in (a, b):
                     s.setMinimum(1)
                     s.setMaximum(max(ws.project.lane_count, g.last, 1))
-                    s.setFixedWidth(52)
+                    # two digits at least, three or more when there are that many lanes; 32 px of buttons, padding and frame, 2 to spare
+                    fit_width(s, "88", str(s.maximum()), floor=52, chrome=34)
                 a.setValue(g.first)
                 b.setValue(g.last)
                 a.valueChanged.connect(lambda val, gi=gi: ws.update_group(ri, gi, first=val))
                 b.valueChanged.connect(lambda val, gi=gi: ws.update_group(ri, gi, last=val))
-                v.addWidget(hrow(tf, label("lanes", "caption"), a, QLabel("–"), b, "stretch",
-                                 button("⊖", lambda _=False, gi=gi: ws.delete_group(ri, gi), "link", "Remove")))
+                v.addWidget(hrow(tf, label("lanes", "caption"), a, QLabel("–"), b,
+                                 button("⊖", lambda _=False, gi=gi: ws.delete_group(ri, gi), "link", "Remove"), grow=0))
                 groups.append((tf, a, b))
             underline = QCheckBox("Underline")
             underline.toggled.connect(lambda on: ws.set_underline(ri, on))
@@ -469,7 +472,6 @@ class LabelsPanel(Panel):
             spin.setDecimals(1)
             spin.setSingleStep(1)
             spin.setSuffix("°")
-            spin.setFixedWidth(64)
             spin.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.NoButtons)
             spin.setToolTip("0° is level, 90° is straight up. Press Enter to apply. The underline stays level.")
             spin.editingFinished.connect(lambda: ws.set_row_angle(ri, spin.value())
@@ -542,7 +544,7 @@ class LadderPanel(Panel):
         self.side = Segmented([("left", "Left"), ("right", "Right")])
         self.side.chosen.connect(ws.set_ladder_side)
         self.unit = QLineEdit()
-        self.unit.setFixedWidth(60)
+        fit_width(self.unit, "kDa", "bases", floor=60)
         self.unit.editingFinished.connect(lambda: ws.set_unit(self.unit.text()) if ws.project.ladder is None
                                           or self.unit.text() != ws.project.ladder.unit else None)
         self.add(hrow(self.side, self.unit, "stretch"))
@@ -627,7 +629,7 @@ class LadderPanel(Panel):
                 for i in members:
                     y = label("", "caption")
                     f = QLineEdit()
-                    f.setFixedWidth(80)
+                    fit_width(f, "10000.00", "skip", floor=80)
                     f.editingFinished.connect(lambda i=i, f=f: self._tick_edited(i, f))
                     mark = label("", "caption")
                     dl = button("✕", lambda _=False, i=i: ws.delete_tick(i), "link", "Delete this tick")
@@ -796,7 +798,7 @@ class GelsSection(QWidget):
         self.line.chosen.connect(lambda c: ws.set_separator(c))
         self.hex = QLineEdit()
         self.hex.setPlaceholderText("#000000")
-        self.hex.setFixedWidth(84)
+        fit_width(self.hex, "#000000", floor=84)
         self.hex.setToolTip("The color of the line as #RRGGBB (RRGGBB and #RGB work too). Gray figures use its brightness.")
         self.hex.editingFinished.connect(self._hex_typed)
         self.thick = QDoubleSpinBox()
@@ -813,7 +815,7 @@ class GelsSection(QWidget):
                             tip="Make the line as thick as the figure's other lines again (Lines, under Layout), and follow them")
         self.arrangement = Segmented([("top_to_bottom", "Top to bottom"), ("side_by_side", "Side by side")])
         self.arrangement.chosen.connect(lambda a: ws.set_arrangement(a))
-        self.arrangement_row = hrow(QLabel("Arrangement"), self.arrangement, "stretch")
+        self.arrangement_row = hrow(QLabel("Arrangement"), self.arrangement, "stretch", spacing=4)
         self.arrangement_row.setToolTip("Stack the gels, or put them next to each other, left to right in this order, each with "
                                         "its own lanes. Lanes are numbered across all of them. Each gel's shift and stretch "
                                         "start over when this changes.")
@@ -837,7 +839,8 @@ class GelsSection(QWidget):
         self.forth = button("→", lambda: ws.nudge_active_gel_rows(1) if ws.project.is_side_by_side else ws.nudge_active_gel(1),
                             tip="Move the gel 1 px right (→ with nothing selected; Shift for 10 px)")
         self.align_row = hrow(self.auto, "stretch", self.back, self.forth)
-        self.shift = QDoubleSpinBox()
+        self.shift = FitDoubleSpinBox()
+        self.shift.samples = ("-1234.56 px",)   # a big scan, shifted; Qt would size it for the widest of ±100000.00
         self.shift.setRange(-100000, 100000)
         self.shift.setDecimals(2)
         self.shift.setSuffix(" px")
@@ -845,7 +848,8 @@ class GelsSection(QWidget):
         self.shift.setToolTip("x in this gel = stretch × x in the figure + shift. No other gel moves; the gel with the lanes "
                               "takes its lane dividers, labels, ticks and names with it.")
         self.shift.editingFinished.connect(lambda: self._set_shift())
-        self.stretch = QDoubleSpinBox()
+        self.stretch = FitDoubleSpinBox()
+        self.stretch.samples = ("-99.99 %", "199.99 %")
         self.stretch.setRange(-99, 9900)
         self.stretch.setDecimals(2)
         self.stretch.setSuffix(" %")
@@ -1226,11 +1230,12 @@ class FigurePanel(Panel):
         r = QHBoxLayout(w)
         r.setContentsMargins(0, 0, 0, 0)
         t = QLabel(title)
-        t.setFixedWidth(78)
+        fit_width(t, "Minimum", "Maximum", title, floor=78, chrome=0)
         s = QSlider(Qt.Orientation.Horizontal)
         s.setRange(0, 1000)
-        f = QDoubleSpinBox()
+        f = FitDoubleSpinBox()
         f.setDecimals(0)
+        f.samples = ("-65535", "65535")   # 16-bit; the range (set from the image's values) widens it only for bigger numbers
         f.setFixedWidth(84)
         f.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.NoButtons)
         r.addWidget(t)
@@ -1312,6 +1317,7 @@ class FigurePanel(Panel):
                 # value was pushed out of sight on Windows
                 f.setRange(min(-s.max_value, v), max(2 * s.max_value, v))   # always holds the value itself
                 f.setDecimals(0 if s.max_value > 1 else 3)
+                f.setFixedWidth(max(84, f.sizeHint().width()))   # whatever this image's values need, never less
                 if not f.hasFocus():
                     f.setValue(v)
                     row["shown"] = f.value()
@@ -1381,7 +1387,7 @@ class ExportPanel(Panel):
         self.add(section("Export"))
         self.rows = {}
         for fmt in ("pdf", "tiff", "png", "svg"):
-            b = QPushButton()
+            b = ElidedButton(inset=24)   # the details give way (…) if the panel is narrow; the tooltip has them whole
             b.setStyleSheet("text-align: left; padding: 9px 12px;")
             b.clicked.connect(lambda _=False, f=fmt: self.window().export(f))
             self.rows[fmt] = b
@@ -1401,6 +1407,7 @@ class ExportPanel(Panel):
         self.prov.setObjectName("prov")
         self.add(self.prov)
         self.intact = QLabel()
+        self.intact.setWordWrap(True)   # "…" and the names of gels that don't match can be long
         self.add(self.intact)
         self.box.addStretch(1)
 
@@ -1415,7 +1422,7 @@ class ExportPanel(Panel):
                    "png": f"{int(r)} dpi, gel resampled" if r else f"Native {n} dpi, gel pixels 1:1",
                    "svg": "Editable text, gel as lossless PNG"}
         for fmt, b in self.rows.items():
-            b.setText(f"{fmt.upper():<6}  {details[fmt]}")
+            b.setText(f"{fmt.upper():<6}  {details[fmt]}")   # (ElidedButton keeps the whole text for its tooltip)
         self.names.setChecked(ws.project.export_file_names)
         try:
             self.prov.setText(breakable(ws.export_info().description))
@@ -1439,15 +1446,18 @@ class ExportPanel(Panel):
 
 
 class Inspector(QFrame):
+    BASE_WIDTH = 340   # at the usual font; wider when the font, or what a panel shows, needs it (see fit_width)
+
     def __init__(self, ws: Workspace):
         super().__init__()
         self.ws = ws
         self.setObjectName("inspector")
-        self.setFixedWidth(340)
+        self.setFixedWidth(self.BASE_WIDTH)
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 8, 0, 0)
         v.setSpacing(4)
         tabs = QHBoxLayout()
+        self.tabs_layout = tabs
         tabs.setContentsMargins(10, 0, 10, 4)
         tabs.setSpacing(4)
         self.tab_buttons = {}
@@ -1479,7 +1489,25 @@ class Inspector(QFrame):
         ws.reveal_contrast.connect(self._reveal_contrast)
         self.refresh()
 
+    def needed_width(self, tab: Optional[str] = None) -> int:
+        """The width that shows the tab row and the panel (with its scroll bar) whole, so nothing is cut off at the right
+        edge, whatever the font; never less than the usual width."""
+        tab = tab or self.ws.inspector_tab
+        m = self.tabs_layout.contentsMargins()
+        row = sum(b.sizeHint().width() for b in self.tab_buttons.values()) + self.tabs_layout.spacing() * (len(self.tab_buttons) - 1)
+        row += m.left() + m.right()
+        sb = self.scroll.verticalScrollBar()
+        bar = max(sb.sizeHint().width(), sb.width(), self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent, None, sb))
+        panel = self.panels[tab].minimumSizeHint().width() + bar + 2 * self.scroll.frameWidth()
+        return max(self.BASE_WIDTH, row, panel)
+
+    def _fit_width(self):
+        w = self.needed_width()
+        if w != self.width():
+            self.setFixedWidth(w)
+
     def refresh(self):
+        self._fit_width()
         tab = self.ws.inspector_tab
         if tab != self._current:
             self._current = tab
@@ -1490,6 +1518,7 @@ class Inspector(QFrame):
             b.setChecked(k == tab)
         if self.ws.has_image:
             self.panels[tab].refresh()
+            self._fit_width()   # what the panel now shows may need more room
 
     def _reveal_contrast(self):
         anchor = self.panels["figure"].bc_anchor

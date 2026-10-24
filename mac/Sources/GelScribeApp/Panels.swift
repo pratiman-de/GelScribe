@@ -327,7 +327,8 @@ struct LabelsPanel: View {
             let own = role.sizeKey.flatMap { p.style.textSizes[$0] } != nil
             PanelSection(title: "Selected label") {
                 HStack {
-                    Text("“\(ws.text(for: role))”").fontWeight(.semibold).lineLimit(1)
+                    Text("“\(ws.text(for: role))”").fontWeight(.semibold).lineLimit(1).truncationMode(.middle)
+                        .help(ws.text(for: role))
                     Spacer()
                     SizeStepper(value: .constant(p.style.size(for: role))) { ws.setSize($0, forLabel: role) }
                 }
@@ -406,7 +407,7 @@ struct LabelsPanel: View {
             HStack(spacing: 6) {
                 Text("Angle").frame(width: 44, alignment: .leading)
                 AngleField(value: p.labelAngle, range: -360...360, step: 1, bigStep: 5, toolTip: angleHelp) { ws.setLabelAngle($0) }
-                    .frame(width: 56)
+                    .frame(width: 68)   // room for -359.99
                 Text("°").foregroundStyle(.secondary)
                 Spacer(minLength: 4)
                 ForEach([0.0, 45, 90], id: \.self) { a in
@@ -516,14 +517,13 @@ struct RowCard: View {
                     HStack(spacing: 5) {
                         TextField("text", text: Binding(get: { grp.text }, set: { ws.updateGroup(row: index, group: g, text: $0) }))
                             .textFieldStyle(.roundedBorder)
-                            .frame(width: 62)
+                            .frame(minWidth: 62, maxWidth: .infinity)   // longer group labels get what room is left
                         Text("lanes").font(.caption).foregroundStyle(.secondary)
                         Stepper(value: Binding(get: { grp.first }, set: { ws.updateGroup(row: index, group: g, first: $0) }),
                                 in: 1...max(1, laneCount)) { Text("\(grp.first)").monospacedDigit().lineLimit(1).fixedSize() }
                         Text("–").foregroundStyle(.secondary)
                         Stepper(value: Binding(get: { grp.last }, set: { ws.updateGroup(row: index, group: g, last: $0) }),
                                 in: 1...max(1, laneCount)) { Text("\(grp.last)").monospacedDigit().lineLimit(1).fixedSize() }
-                        Spacer(minLength: 0)
                         Button { ws.deleteGroup(row: index, group: g) } label: { Image(systemName: "minus.circle") }
                             .buttonStyle(.borderless).foregroundStyle(.secondary)
                     }
@@ -542,7 +542,7 @@ struct RowCard: View {
                 HStack(spacing: 6) {
                     Text("Angle").frame(width: 44, alignment: .leading)
                     AngleField(value: row.rotation, range: -360...360, step: 1, bigStep: 5, toolTip: angleHelp) { ws.setRowAngle(row: index, $0) }
-                        .frame(width: 56)
+                        .frame(width: 68)
                     Text("°").foregroundStyle(.secondary)
                     Spacer(minLength: 4)
                     ForEach([0.0, 45, 90], id: \.self) { a in
@@ -743,7 +743,8 @@ struct TickRow: View {
     var body: some View {
         HStack(spacing: 6) {
             Circle().fill(ws.selection == .tick(band.id) ? Color.yellow : Color.yellow.opacity(0.45)).frame(width: 7, height: 7)
-            Text("y \(Int(band.y))").font(.caption.monospacedDigit()).foregroundStyle(.secondary).frame(width: 44, alignment: .leading)
+            Text("y \(Int(band.y))").font(.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                .frame(minWidth: 44, alignment: .leading)   // a tall scan has five-digit rows
             if band.ignore {
                 Text("skipped").font(.callout).foregroundStyle(.secondary).frame(width: 70, alignment: .leading)
             } else {
@@ -883,9 +884,9 @@ struct FigurePanel: View {
                         HStack(spacing: 6) {
                             HStack(spacing: 6) {
                                 Image(systemName: on ? "lock.fill" : "lock.open").foregroundStyle(.secondary).frame(width: 16)
-                                Text("Gel \(n + 1)").font(.callout.weight(.semibold))
+                                Text("Gel \(n + 1)").font(.callout.weight(.semibold)).lineLimit(1).fixedSize()
                                 if k == nil {
-                                    Text("LANES").font(.system(size: 9, weight: .bold)).kerning(0.4)
+                                    Text("LANES").font(.system(size: 9, weight: .bold)).kerning(0.4).lineLimit(1).fixedSize()
                                         .padding(.horizontal, 5).padding(.vertical, 2)
                                         .background(Capsule().fill(Color.accentColor.opacity(0.28)))
                                         .help("Its lane dividers are the ones every gel uses")
@@ -940,7 +941,7 @@ struct FigurePanel: View {
                 Button { ws.setRotation(angle + 0.1) } label: { Image(systemName: "rotate.left") }.buttonStyle(.borderless)
                     .help("Turn 0.1° counter-clockwise")
                 AngleField(value: angle) { ws.setRotation($0) }
-                    .frame(width: 60)
+                    .frame(width: 68)
                 Text("°").foregroundStyle(.secondary)
                 Button { ws.setRotation(angle - 0.1) } label: { Image(systemName: "rotate.right") }.buttonStyle(.borderless)
                     .help("Turn 0.1° clockwise")
@@ -1166,9 +1167,9 @@ struct GelsPanel: View {
                     }
                     .controlSize(.small)
                     HStack(spacing: 6) {
-                        Text("Shift")
+                        Text("Shift").lineLimit(1).fixedSize()
                         TextField("", value: Binding(get: { ws.activeShift }, set: { ws.setShift($0) }), format: .number.precision(.fractionLength(0)))
-                            .frame(width: 64).multilineTextAlignment(.trailing)
+                            .frame(width: 96).multilineTextAlignment(.trailing)   // up to -1,000,000
                             .help("x in this gel = x in the figure + shift. Moves this gel with its lane dividers, labels, ticks and names; no other gel moves.")
                         Text("px").foregroundStyle(.secondary)
                         Spacer()
@@ -1188,6 +1189,7 @@ struct GelsPanel: View {
         } else {
             Text("\(p.strips[k - 1].image) · \(size.width) × \(size.height) px")
                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                .help(p.strips[k - 1].image)
         }
         let side = p.isSideBySide
         HStack {
@@ -1201,24 +1203,30 @@ struct GelsPanel: View {
                 .help(side ? "Move the gel 1 px down (↓ with nothing selected; ⇧ for 10 px)" : "Move the gel 1 px right (→ with nothing selected; ⇧ for 10 px)")
         }
         .controlSize(.small)
+        let a = p.effectiveAlignment(k)
+        // two rows: the labels and numbers each get their width (-1,234.56 px, 9,900 %) in the inspector's fixed 280 points
         HStack(spacing: 6) {
-            let a = p.effectiveAlignment(k)
-            Text(side ? "Shift up/down" : "Shift")
+            Text(side ? "Shift up/down" : "Shift").lineLimit(1).fixedSize()
+                .frame(width: 88, alignment: .leading)
             TextField("", value: Binding(get: { a.shift }, set: { ws.setShift($0) }),
                       format: .number.precision(.fractionLength(0...2)))
-                .frame(width: 64).multilineTextAlignment(.trailing)
+                .frame(width: 96).multilineTextAlignment(.trailing)
                 .help(side ? "y in this gel = stretch × y in the gel with the lanes + shift. A positive shift moves the gel up. No other gel moves."
                       : "x in this gel = stretch × x in the figure + shift. No other gel moves.")
             Text("px").foregroundStyle(.secondary)
-            Spacer()
-            Text("Stretch")
+            Spacer(minLength: 0)
+        }
+        HStack(spacing: 6) {
+            Text("Stretch").lineLimit(1).fixedSize()
+                .frame(width: 88, alignment: .leading)
             TextField("", value: Binding(get: { ((a.scale - 1) * 10000).rounded() / 100 }, set: { ws.setScale(1 + $0 / 100) }),
                       format: .number.precision(.fractionLength(0...2)))
-                .frame(width: 52).multilineTextAlignment(.trailing)
+                .frame(width: 96).multilineTextAlignment(.trailing)
                 .disabled(ws.activeStrict)
                 .help(side ? "How much taller this gel is stretched than \(ws.gelName(nil)), in percent"
                       : "How much wider this gel's lanes are than \(ws.gelName(nil))'s, in percent")
             Text("%").foregroundStyle(.secondary)
+            Spacer(minLength: 0)
         }
         Text(ws.alignNote ?? (side ? "Drag the gel up or down in the figure (Select tool), or Auto-align, until its bands line up with the other gels'. Its lane dividers are set in its own view."
                               : "Drag the gel sideways in the figure (Select tool), or Auto-align, until its lanes sit between the dividers."))
@@ -1269,14 +1277,15 @@ struct GelRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "line.3.horizontal").foregroundStyle(.tertiary)
-            Text("Gel \(place + 1)").font(.callout.weight(.semibold))
-            Text(image).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            Text("Gel \(place + 1)").font(.callout.weight(.semibold)).lineLimit(1).fixedSize()
+            Text(image).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)   // only the file name gives way
+                .help(image)
             Spacer(minLength: 4)
             if let problem {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).help(problem)
             }
             if strip == nil {
-                Text("LANES").font(.system(size: 9, weight: .bold)).kerning(0.4)
+                Text("LANES").font(.system(size: 9, weight: .bold)).kerning(0.4).lineLimit(1).fixedSize()
                     .padding(.horizontal, 5).padding(.vertical, 2)
                     .background(Capsule().fill(Color.accentColor.opacity(0.28)))
                     .help("Its lane dividers are the ones every gel uses")

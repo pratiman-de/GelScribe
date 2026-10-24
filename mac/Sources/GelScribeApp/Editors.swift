@@ -38,7 +38,9 @@ struct TickEditor: View {
                 Text(unit).foregroundStyle(.secondary)
             }
             if !ladderSizes.isEmpty {
-                LazyVGrid(columns: Array(repeating: GridItem(.fixed(46), spacing: 6), count: 5), alignment: .leading, spacing: 6) {
+                // five columns of chips; bp ladders go to 10000, which needs wider chips and so four columns
+                let wide = ladderSizes.contains { FigureLayoutEngine.formatSize($0).count > 4 }
+                LazyVGrid(columns: Array(repeating: GridItem(.fixed(wide ? 58 : 46), spacing: 6), count: wide ? 4 : 5), alignment: .leading, spacing: 6) {
                     ForEach(ladderSizes, id: \.self) { s in
                         Button(FigureLayoutEngine.formatSize(s)) {
                             text = FigureLayoutEngine.formatSize(s)
@@ -239,6 +241,8 @@ struct ChipStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 12, weight: .semibold, design: .rounded).monospacedDigit())
+            .lineLimit(1)   // never "1000" over "0"
+            .fixedSize()
             .padding(.horizontal, 8)
             .frame(minWidth: 46, minHeight: 24)
             .background(

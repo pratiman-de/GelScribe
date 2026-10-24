@@ -4,13 +4,92 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
-from PySide6.QtGui import QKeyEvent
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLayout, QLineEdit, QMenu, QPlainTextEdit, QPushButton,
-                               QVBoxLayout, QWidget)
+from PySide6.QtGui import QFontMetrics, QKeyEvent
+from PySide6.QtWidgets import (QDoubleSpinBox, QFrame, QHBoxLayout, QLabel, QLayout, QLineEdit, QMenu,
+                               QPlainTextEdit, QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
 from ..core.model import format_size
 
 EDITOR_WIDTH = 270
+
+
+def text_width(w: QWidget, *samples: str, pad: int = 0) -> int:
+    """The widest of the sample texts in this widget's font (the app's font size and scale, not a guess in pixels) plus
+    padding. Sizes made from this follow Segoe UI at 150%, bigger fonts and every platform's own widths."""
+    w.ensurePolished()   # the stylesheet's font size applies at polish time
+    fm = QFontMetrics(w.font())
+    return max((fm.horizontalAdvance(t) for t in samples), default=0) + pad
+
+
+def fit_width(w: QWidget, *samples: str, floor: int = 0, chrome: int = 16) -> QWidget:
+    """A field just wide enough for its widest real value: the samples, or the floor in pixels if that is more.
+    `chrome` is the field's own padding and border (the stylesheet's 6 px each side plus the border)."""
+    w.setFixedWidth(max(floor, text_width(w, *samples, pad=chrome)))
+    return w
+
+
+class _Fit:
+    """Spin boxes size themselves for the widest number their range allows, so a huge range pushes the value out of
+    sight (the Minimum field on Windows). These size for the widest value they really show: the sample texts and the
+    current text, whatever the range."""
+    samples: tuple = ()
+
+    def _fitted(self, hint: QSize) -> QSize:
+        le = self.lineEdit()
+        shown = self.prefix() + le.text() + self.suffix() if le is not None else ""
+        extra = hint.width() - self._natural_text_width()
+        widest = text_width(self, shown, *self.samples) + 6
+        return QSize(max(extra + widest, 0), hint.height())
+
+    def _natural_text_width(self) -> int:
+        self.ensurePolished()
+        fm = QFontMetrics(self.font())
+        w = 0
+        for v in (self.minimum(), self.maximum()):
+            t = self.textFromValue(v)[:18] + self.prefix() + self.suffix() + " "
+            w = max(w, fm.horizontalAdvance(t))
+        return w
+
+    def sizeHint(self) -> QSize:
+        return self._fitted(super().sizeHint())
+
+    def minimumSizeHint(self) -> QSize:
+        return self._fitted(super().minimumSizeHint())
+
+
+class FitDoubleSpinBox(_Fit, QDoubleSpinBox):
+    pass
+
+
+class ElidedButton(QPushButton):
+    """A button whose one line of text gives way (…) instead of widening the panel or being cut off at the edge. The whole
+    text is the tooltip."""
+
+    def __init__(self, text: str = "", inset: int = 24):
+        super().__init__()
+        self._full, self._inset = "", inset
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)   # its hint is a wish, not a minimum
+        self.setText(text)
+
+    def setText(self, text: str):
+        self._full = text
+        self._elide()
+
+    def fullText(self) -> str:
+        return self._full
+
+    def _elide(self):
+        avail = max(self.width() - self._inset - 4, 20) if self.width() > 40 else 10 ** 6
+        shown = QFontMetrics(self.font()).elidedText(self._full, Qt.TextElideMode.ElideRight, avail)
+        QPushButton.setText(self, shown)
+        self.setToolTip(self._full if shown != self._full else "")
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._elide()
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(40, super().minimumSizeHint().height())
 
 
 def label(text: str, kind: str = "") -> QLabel:
@@ -139,7 +218,7 @@ class SizeStepper(QWidget):
         self.minus = button("−", lambda: self._set(self.value - 0.5))
         self.plus = button("+", lambda: self._set(self.value + 0.5))
         self.field = QLineEdit(format_size(value))
-        self.field.setFixedWidth(46)
+        fit_width(self.field, "100.5", floor=46)
         self.field.setAlignment(Qt.AlignmentFlag.AlignRight)
         self.field.editingFinished.connect(self._typed)
         for b in (self.minus, self.plus):
@@ -227,7 +306,7 @@ class TickEditor(Popup):
         value = initial if initial is not None else suggestion
         row = QHBoxLayout()
         self.field = QLineEdit(format_size(value) if value is not None else "")
-        self.field.setFixedWidth(110)
+        fit_width(self.field, "10000.5", floor=110)
         self.field.returnPressed.connect(self._commit)
         row.addWidget(self.field)
         row.addWidget(label(unit, "caption"))

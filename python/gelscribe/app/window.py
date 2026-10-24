@@ -16,7 +16,7 @@ from ..core.package import EXTENSION, ProjectError, is_project_path
 from ..core.scheme import MIME
 from . import icons, keys, theme
 from .canvas import Canvas
-from .editors import NameEditor, TextEditor, TickEditor, button, label
+from .editors import NameEditor, TextEditor, TickEditor, button, label, text_width
 from .inspector import Inspector
 from .workspace import TOOL_HINT, TOOL_TITLE, TOOLS, Workspace
 
@@ -278,6 +278,7 @@ class MainWindow(QMainWindow):
         sb.addPermanentWidget(self.zoom_out_button)
         self.zoom_label = QPushButton("100%")
         self.zoom_label.setProperty("link", True)
+        self.zoom_label.setMinimumWidth(text_width(self.zoom_label, "6400%", pad=8))   # the widest zoom, whatever the font
         self.zoom_label.setToolTip("Zoom to fit (Ctrl+0)")
         self.zoom_label.clicked.connect(lambda: self.ws.zoom_request.emit("fit"))
         sb.addPermanentWidget(self.zoom_label)
