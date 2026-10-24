@@ -14,6 +14,21 @@ sys.path.insert(0, str(ROOT))
 from gelscribe import __version__                  # 0.1.1
 
 WIN = sys.platform == "win32"
+
+# A build Python made from Anaconda or Miniconda keeps the DLLs that Python's own modules load (libffi for ctypes,
+# which SciPy needs, plus OpenSSL, bz2, lzma and expat) in Library\bin, outside the venv, where PyInstaller doesn't
+# look; the frozen app then fails with "DLL load failed while importing _ctypes". Show it those folders, and take
+# libffi along explicitly.
+extra_binaries = []
+if WIN:
+    import glob
+    import os
+    base = Path(sys.base_prefix)
+    dll_dirs = [d for d in (base / "Library" / "bin", base / "DLLs", base) if d.is_dir()]
+    os.environ["PATH"] = os.pathsep.join([str(d) for d in dll_dirs] + [os.environ.get("PATH", "")])
+    for d in dll_dirs:
+        for pattern in ("ffi*.dll", "libffi*.dll"):
+            extra_binaries += [(f, ".") for f in glob.glob(str(d / pattern))]
 NUMBERS = tuple((int(p) if p.isdigit() else 0) for p in (__version__.split(".") + ["0", "0", "0"])[:3]) + (0,)
 
 # every file the package reads from disk next to its modules
@@ -64,7 +79,7 @@ def trim(entries):
 
 
 def analysis(script):
-    return Analysis([str(ROOT / "build" / script)], pathex=[str(ROOT)], datas=datas, hiddenimports=hiddenimports,
+    return Analysis([str(ROOT / "build" / script)], pathex=[str(ROOT)], binaries=extra_binaries, datas=datas, hiddenimports=hiddenimports,
                     excludes=excludes, noarchive=False)
 
 
