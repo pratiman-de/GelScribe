@@ -1308,7 +1308,9 @@ class FigurePanel(Panel):
                 row["setting"] = False
                 f = row["field"]
                 f.blockSignals(True)
-                f.setRange(-1e9, 1e9)
+                # a range near the image's own values: Qt sizes the field for its widest number, and with ±1e9 the
+                # value was pushed out of sight on Windows
+                f.setRange(min(-s.max_value, v), max(2 * s.max_value, v))   # always holds the value itself
                 f.setDecimals(0 if s.max_value > 1 else 3)
                 if not f.hasFocus():
                     f.setValue(v)
