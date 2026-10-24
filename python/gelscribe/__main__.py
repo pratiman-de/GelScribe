@@ -9,9 +9,10 @@ def startup_failed(e: BaseException) -> int:
         sys.stderr.write("".join(traceback.format_exception(e)))
     if sys.platform == "win32":
         import ctypes
-        ctypes.windll.user32.MessageBoxW(
-            None, f"GelScribe could not start.\n\n{type(e).__name__}: {e}\n\nTo set it up again, delete python.txt in "
-                  "the GelScribe folder and double-click GelScribe.bat.", "GelScribe", 0x10)
+        fix = ("Reinstall GelScribe, or report this message." if getattr(sys, "frozen", False)   # the .exe build
+               else "To set it up again, delete python.txt in the GelScribe folder and double-click GelScribe.bat.")
+        ctypes.windll.user32.MessageBoxW(None, f"GelScribe could not start.\n\n{type(e).__name__}: {e}\n\n{fix}",
+                                         "GelScribe", 0x10)
     return 1
 
 

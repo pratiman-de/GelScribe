@@ -16,20 +16,18 @@ from gelscribe import __version__                  # 0.1.1
 WIN = sys.platform == "win32"
 
 # A build Python made from Anaconda or Miniconda keeps the DLLs that Python's own modules load (libffi for ctypes,
-# which SciPy needs, plus OpenSSL, bz2, lzma and expat) in Library\bin, outside the venv, where PyInstaller doesn't
-# look; the frozen app then fails with "DLL load failed while importing _ctypes". Show it those folders, and take
-# libffi along explicitly.
+# which SciPy needs; OpenSSL for the update check; bz2, lzma, expat) in Library\bin, outside the venv, where
+# PyInstaller doesn't look, so the app failed with "DLL load failed while importing _ctypes". Take just those DLLs
+# along by name. Not the whole folder: it also holds older copies of Windows runtime DLLs, and with those Qt failed
+# with "DLL load failed while importing QtCore: The specified procedure could not be found".
 extra_binaries = []
 if WIN:
     import glob
-    import os
     base = Path(sys.base_prefix)
-    dll_dirs = [d for d in (base / "Library" / "bin", base / "DLLs", base) if d.is_dir()]
-    os.environ["PATH"] = os.pathsep.join([str(d) for d in dll_dirs] + [os.environ.get("PATH", "")])
-    for d in dll_dirs:
-        for pattern in ("ffi*.dll", "libffi*.dll"):
+    for d in (base / "Library" / "bin", base / "DLLs"):
+        for pattern in ("ffi*.dll", "libffi*.dll", "libssl-*.dll", "libcrypto-*.dll", "libbz2*.dll", "liblzma*.dll",
+                        "libexpat*.dll"):
             extra_binaries += [(f, ".") for f in glob.glob(str(d / pattern))]
-NUMBERS = tuple((int(p) if p.isdigit() else 0) for p in (__version__.split(".") + ["0", "0", "0"])[:3]) + (0,)
 
 # every file the package reads from disk next to its modules
 RES = "gelscribe/app/resources"
