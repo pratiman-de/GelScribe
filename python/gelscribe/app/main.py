@@ -8,11 +8,11 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QFileDialog
 
 from .. import __version__
 from ..core.package import GelPackage, PROJECT_FILE, is_image_path, is_project_path
-from . import keys, settings, theme
+from . import dialogs, keys, settings, theme
 from .updates import UpdateController
 from .window import IMAGE_FILTER, MainWindow, app_icon
 from .workspace import Workspace
@@ -104,7 +104,7 @@ class Controller:
                     self.new_window(GelPackage.create_from(path))
             self.set_last_dir(path.parent)
         except Exception as e:
-            QMessageBox.warning(None, "GelScribe", f"{path.name} could not be opened.\n\n{e}")
+            dialogs.warn(None, f"{path.name} could not be opened.\n\n{e}")
 
     def open_dialog(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -147,7 +147,7 @@ def log_errors() -> Path:
     told = []
 
     def tell(value):
-        QMessageBox.warning(None, "GelScribe", f"Something went wrong: {value}\n\nThe details are in {log}")
+        dialogs.warn(None, f"Something went wrong: {value}\n\nThe details are in {log}")
 
     def hook(kind, value, tb):
         text = "".join(traceback.format_exception(kind, value, tb))

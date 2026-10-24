@@ -8,8 +8,10 @@ from PIL import Image
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox
+from PySide6.QtWidgets import QApplication, QLineEdit
 
+from gelscribe.app import dialogs
+from gelscribe.app.dialogs import MessageDialog
 from gelscribe.app.main import Controller
 from gelscribe.core import ops
 from gelscribe.core.image import ImageError
@@ -24,7 +26,7 @@ from test_gels import cut_blot, piece_png
 def boxes(monkeypatch):
     """Message boxes recorded instead of shown: what each said."""
     said = []
-    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda parent, title, text, *a, **k: said.append(text)))
+    monkeypatch.setattr(dialogs, "warn", lambda parent, text, *a, **k: said.append(text))
     return said
 
 
@@ -64,7 +66,7 @@ def test_a_failed_save_keeps_the_window_and_its_changes(win, tmp_path, monkeypat
     ws.save_to(folder)
     (folder / ws.project.image).write_bytes(b"another image under the same name")   # write() will refuse this
     ws.set_title("Edited")
-    monkeypatch.setattr(QMessageBox, "exec", lambda box: QMessageBox.StandardButton.Save)
+    monkeypatch.setattr(MessageDialog, "exec", lambda box: box.buttons()[0].click())   # Save
     assert not win.close()   # not closed
     assert win.isVisible() and ws.dirty and win in win.ctl.windows
     assert len(boxes) == 1 and "Could not save" in boxes[0] and "different image" in boxes[0]

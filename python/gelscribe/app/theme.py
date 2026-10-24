@@ -64,6 +64,12 @@ QPushButton:disabled {{ color: {c['disabled']}; background: {c['button_disabled'
 QPushButton[primary="true"] {{ background: {ACCENT}; color: white; font-weight: 600; }}
 QPushButton[primary="true"]:hover {{ background: #5189f7; }}
 QPushButton[primary="true"]:disabled {{ background: {c['primary_disabled']}; color: {c['primary_disabled_text']}; }}
+QPushButton[destructive="true"] {{ background: #d93a30; color: white; font-weight: 600; }}
+QPushButton[destructive="true"]:hover {{ background: #e2534a; }}
+QPushButton[dialog="true"] {{ min-width: 76px; padding: 6px 16px; }}
+QPushButton[dialog="true"][primary="false"] {{ border: 1px solid {c['field_border']}; padding: 5px 15px; }}
+QLabel#msgHeading {{ font-size: 15px; font-weight: 700; color: {c['text']}; }}
+QLabel#msgDetail {{ color: {c['dim']}; }}
 QPushButton[chip="true"] {{ border-radius: 12px; padding: 3px 11px; font-weight: 600; }}
 QPushButton[link="true"] {{ background: transparent; color: {c['dim']}; padding: 2px 0; text-align: left; }}
 QPushButton[link="true"]:hover {{ color: {c['text']}; }}

@@ -9,9 +9,10 @@ import tifffile
 from PIL import Image
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QFileDialog
 
 from gelscribe.app import theme
+from gelscribe.app.dialogs import MessageDialog
 from gelscribe.app.editors import NameEditor, TextEditor, TickEditor
 from gelscribe.app.main import Controller
 from gelscribe.core import labels as ql
@@ -415,14 +416,15 @@ def test_closing_with_changes_asks(win, monkeypatch):
     win.ws.set_title("Unsaved")
     answers = []
 
-    def answer(button):
+    def answer(label):
         def exec_(box):
             answers.append(box.text())
-            return button
+            assert [b.text() for b in box.buttons()] == ["Save", "Don't Save", "Cancel"]
+            next(b for b in box.buttons() if b.text() == label).click()
         return exec_
-    monkeypatch.setattr(QMessageBox, "exec", answer(QMessageBox.StandardButton.Cancel))
+    monkeypatch.setattr(MessageDialog, "exec", answer("Cancel"))
     assert not win.close() and win.isVisible()
-    monkeypatch.setattr(QMessageBox, "exec", answer(QMessageBox.StandardButton.Discard))
+    monkeypatch.setattr(MessageDialog, "exec", answer("Don't Save"))
     assert win.close()
     assert len(answers) == 2 and "Save the changes" in answers[0]
 

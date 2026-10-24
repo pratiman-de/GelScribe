@@ -7,10 +7,11 @@ from typing import Callable, Optional
 
 from PySide6.QtCore import QObject, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QMessageBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QVBoxLayout, QWidget
 
 from .. import __version__
 from ..core import updates
+from . import dialogs
 from .editors import button, label, text_width
 
 
@@ -87,7 +88,7 @@ class UpdateController(QObject):
         self.checker = UpdateChecker(fetch)
         self.checker.finished.connect(self._done)
         self.notice: Optional[UpdateNotice] = None
-        self.alert: Optional[QMessageBox] = None
+        self.alert: Optional[dialogs.MessageDialog] = None
 
     # the two stored values: "updateCheckEnabled" and "lastUpdateCheck" (seconds since 1970)
     def enabled(self) -> bool:
@@ -129,7 +130,6 @@ class UpdateController(QObject):
         notice.raise_()
 
     def show_alert(self, text: str):
-        self.alert = QMessageBox(QMessageBox.Icon.Information, "GelScribe", text, QMessageBox.StandardButton.Ok,
-                                 self.front_window())
+        self.alert = dialogs.MessageDialog(self.front_window(), text)
         self.alert.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.alert.open()   # a sheet-like alert that does not block the event loop

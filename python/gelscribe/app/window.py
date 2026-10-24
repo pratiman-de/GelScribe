@@ -7,14 +7,14 @@ from typing import Optional
 
 from PySide6.QtCore import QByteArray, QMimeData, QPoint, QSize, Qt
 from PySide6.QtGui import QAction, QActionGroup, QIcon, QImage, QKeySequence
-from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
+from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow,
                                QPushButton, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
 from .. import __version__
 from ..core.model import Role
 from ..core.package import EXTENSION, ProjectError, is_project_path
 from ..core.scheme import MIME
-from . import icons, keys, theme
+from . import dialogs, icons, keys, theme
 from .canvas import Canvas
 from .editors import NameEditor, TextEditor, TickEditor, button, label, text_width
 from .inspector import Inspector
@@ -535,30 +535,22 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------------------------------------ questions
 
     def ask_straighten(self, delta: float):
-        m = QMessageBox(self)
-        m.setWindowTitle("Turn off Keep original pixels to straighten?")
-        m.setText("Turn off Keep original pixels to straighten?")
         extra = "" if self.ws.project.display.is_identity else " Brightness & contrast will reach exports too."
-        m.setInformativeText("Rotating resamples the gel, so the exported pixels will no longer be the originals. "
-                             "The exports record the rotation, and your original file stays untouched." + extra)
-        ok = m.addButton(f"Turn Off and Rotate {delta:+.2f}°", QMessageBox.ButtonRole.AcceptRole)
-        m.addButton(QMessageBox.StandardButton.Cancel)
-        m.exec()
-        if m.clickedButton() is ok:
+        turn_off = f"Turn Off and Rotate {delta:+.2f}°"
+        if dialogs.ask(self, "Turn off Keep original pixels to straighten?",
+                       "Rotating resamples the gel, so the exported pixels will no longer be the originals. "
+                       "The exports record the rotation, and your original file stays untouched." + extra,
+                       (turn_off, "Cancel")) == turn_off:
             self.ws.confirm_straighten(delta)
 
     def ask_contrast_export(self):
-        m = QMessageBox(self)
-        m.setWindowTitle("Use brightness & contrast in exports?")
-        m.setText("Use brightness & contrast in exports?")
         which = "the gel" if not self.ws.project.strips else self.ws.active_name
-        m.setInformativeText(f"Exports will show {which} at display range {self.ws.display_range_text()} instead of "
-                             "its original values, like ImageJ's Apply. Each file records the range, and your original "
-                             "file stays untouched. With Keep original pixels off you can also rotate and fill.")
-        ok = m.addButton("Turn Off Keep Original Pixels", QMessageBox.ButtonRole.AcceptRole)
-        m.addButton(QMessageBox.StandardButton.Cancel)
-        m.exec()
-        if m.clickedButton() is ok:
+        turn_off = "Turn Off Keep Original Pixels"
+        if dialogs.ask(self, "Use brightness & contrast in exports?",
+                       f"Exports will show {which} at display range {self.ws.display_range_text()} instead of "
+                       "its original values, like ImageJ's Apply. Each file records the range, and your original "
+                       "file stays untouched. With Keep original pixels off you can also rotate and fill.",
+                       (turn_off, "Cancel")) == turn_off:
             self.ws.set_strict(False)
 
     def confirm_changed_images(self) -> bool:
@@ -566,27 +558,15 @@ class MainWindow(QMainWindow):
         lines = self.ws.changed_warnings()
         if not lines:
             return True
-        m = QMessageBox(self)
-        m.setIcon(QMessageBox.Icon.Warning)
-        m.setWindowTitle("A gel's image has changed")
-        m.setText("A gel's image has changed")
-        m.setInformativeText("\n".join(lines))
-        ok = m.addButton("Export Anyway", QMessageBox.ButtonRole.AcceptRole)
-        m.addButton(QMessageBox.StandardButton.Cancel)
-        m.exec()
-        return m.clickedButton() is ok
+        return dialogs.ask(self, "A gel's image has changed", "\n".join(lines), ("Export Anyway", "Cancel")) == "Export Anyway"
 
     def ask_export_dpi(self, dpi: float):
-        m = QMessageBox(self)
-        m.setWindowTitle("Resample the gel for PNG and TIFF?")
-        m.setText("Resample the gel for PNG and TIFF?")
-        m.setInformativeText(f"At {int(dpi)} dpi the gel's pixels are recalculated, so PNG and TIFF exports won't carry "
-                             f"the original values (native is {self.ws.native_dpi} dpi). Your original file, PDF and SVG "
-                             "are unaffected, and each PNG or TIFF records the resampling.")
-        ok = m.addButton(f"Use {int(dpi)} dpi", QMessageBox.ButtonRole.AcceptRole)
-        m.addButton("Keep Native", QMessageBox.ButtonRole.RejectRole)
-        m.exec()
-        if m.clickedButton() is ok:
+        use = f"Use {int(dpi)} dpi"
+        if dialogs.ask(self, "Resample the gel for PNG and TIFF?",
+                       f"At {int(dpi)} dpi the gel's pixels are recalculated, so PNG and TIFF exports won't carry "
+                       f"the original values (native is {self.ws.native_dpi} dpi). Your original file, PDF and SVG "
+                       "are unaffected, and each PNG or TIFF records the resampling.",
+                       (use, "Keep Native")) == use:
             self.ws.set_export_dpi(dpi)
 
     # ------------------------------------------------------------------------------------------------ files
@@ -600,7 +580,7 @@ class MainWindow(QMainWindow):
             else:
                 self.ws.adopt_image(path)
         except Exception as e:
-            QMessageBox.warning(self, "GelScribe", f"{path.name} could not be opened.\n\n{e}")
+            dialogs.warn(self, f"{path.name} could not be opened.\n\n{e}")
 
     def adopt_images(self, paths: list[Path]):
         """Images dropped on the window. Into the empty one the first starts the project and the others stack under it
@@ -614,14 +594,14 @@ class MainWindow(QMainWindow):
         try:
             failed = self.ws.adopt_images(images)
         except Exception as e:
-            QMessageBox.warning(self, "GelScribe", f"{images[0].name} could not be opened.\n\n{e}")
+            dialogs.warn(self, f"{images[0].name} could not be opened.\n\n{e}")
             return
         self.tell(failed)
 
     def tell(self, problems: list[str]):
         """What couldn't be done, in one box."""
         if problems:
-            QMessageBox.warning(self, "GelScribe", "\n\n".join(problems))
+            dialogs.warn(self, "\n\n".join(problems))
 
     def add_gel_dialog(self):
         """File › Add Gel…: more gels, or the other pieces of a cut membrane, at the bottom of the stack."""
@@ -649,7 +629,7 @@ class MainWindow(QMainWindow):
         try:
             self.ws.save_to(self.ws.folder)
         except (OSError, ProjectError) as e:   # nothing was written: the window and its changes stay as they were
-            QMessageBox.warning(self, "GelScribe", f"Could not save.\n\n{e}")
+            dialogs.warn(self, f"Could not save.\n\n{e}")
             return False
         self.ctl.remember(self.ws.folder)
         return True
@@ -666,12 +646,12 @@ class MainWindow(QMainWindow):
         if folder.suffix.lower() != EXTENSION:
             folder = folder.with_name(folder.name + EXTENSION)
         if folder.exists() and not (folder / "project.json").exists() and any(folder.iterdir()):
-            QMessageBox.warning(self, "GelScribe", f"{folder.name} already exists and isn't a GelScribe project.")
+            dialogs.warn(self, f"{folder.name} already exists and isn't a GelScribe project.")
             return False
         try:
             self.ws.save_to(folder)
         except (OSError, ProjectError) as e:
-            QMessageBox.warning(self, "GelScribe", f"Could not save.\n\n{e}")
+            dialogs.warn(self, f"Could not save.\n\n{e}")
             return False
         self.ctl.remember(folder)
         self.ctl.set_last_dir(folder.parent)
@@ -680,15 +660,10 @@ class MainWindow(QMainWindow):
     def closeEvent(self, e):
         self.ws.finish_quick_labels(normalize=False)
         if self.ws.has_image and self.ws.dirty:
-            m = QMessageBox(self)
-            m.setWindowTitle("GelScribe")
-            m.setText(f"Save the changes to “{self.ws.title}”?")
-            m.setInformativeText("Your changes will be lost if you don't save them.")
-            m.setStandardButtons(QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard
-                                 | QMessageBox.StandardButton.Cancel)
-            r = m.exec()
-            keep = r == QMessageBox.StandardButton.Cancel
-            if r == QMessageBox.StandardButton.Save:
+            r = dialogs.ask(self, f"Save the changes to “{self.ws.title}”?",
+                            "Your changes will be lost if you don't save them.", ("Save", "Don't Save", "Cancel"))
+            keep = r == "Cancel"
+            if r == "Save":
                 try:
                     keep = not self.save()
                 except Exception:   # whatever went wrong, the window and its changes stay
@@ -709,7 +684,7 @@ class MainWindow(QMainWindow):
         try:
             pkg = self.ws.package_for_new_gel(Path(path))
         except Exception as e:
-            QMessageBox.warning(self, "GelScribe", f"{Path(path).name} could not be opened.\n\n{e}")
+            dialogs.warn(self, f"{Path(path).name} could not be opened.\n\n{e}")
             return
         self.ctl.new_window(pkg)
 
@@ -720,7 +695,7 @@ class MainWindow(QMainWindow):
         if not ws.has_image:
             return
         if ws.export_problem:   # no use asking where to put it
-            QMessageBox.warning(self, "GelScribe", f"Export failed.\n\n{ws.export_problem}")
+            dialogs.warn(self, f"Export failed.\n\n{ws.export_problem}")
             return
         if not self.confirm_changed_images():
             return
@@ -739,7 +714,7 @@ class MainWindow(QMainWindow):
         finally:
             QApplication.restoreOverrideCursor()
         if failed is not None:
-            QMessageBox.warning(self, "GelScribe", f"Export failed.\n\n{failed}")
+            dialogs.warn(self, f"Export failed.\n\n{failed}")
             return
         self.ctl.set_last_export_dir(Path(path).parent)
         self.statusBar().showMessage(f"Exported {Path(path).name}", 5000)
@@ -749,7 +724,7 @@ class MainWindow(QMainWindow):
         if not ws.has_image:
             return
         if ws.export_problem:
-            QMessageBox.warning(self, "GelScribe", f"Copy failed.\n\n{ws.export_problem}")
+            dialogs.warn(self, f"Copy failed.\n\n{ws.export_problem}")
             return
         if not self.confirm_changed_images():
             return
@@ -764,7 +739,7 @@ class MainWindow(QMainWindow):
         finally:
             QApplication.restoreOverrideCursor()
         if failed is not None:
-            QMessageBox.warning(self, "GelScribe", f"Copy failed.\n\n{failed}")
+            dialogs.warn(self, f"Copy failed.\n\n{failed}")
             return
         QApplication.clipboard().setMimeData(md)
         self.statusBar().showMessage("Figure copied (PDF and PNG)", 4000)
@@ -784,10 +759,6 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Nothing to paste: copy labels from another gel first.", 5000)
 
     def about(self):
-        m = QMessageBox(self)
-        m.setWindowTitle("About GelScribe")
-        m.setIconPixmap(app_icon().pixmap(QSize(96, 96)))
-        m.setText(f"<b style='font-size:16px'>GelScribe</b><br>Version {__version__}")
-        m.setInformativeText(f"<a href='https://github.com/pratiman-de' style='color:{theme.C['link']}'>github.com/pratiman-de</a>"
-                             "<br>Copyright © 2026 Pratiman De")
-        m.exec()
+        dialogs.ask(self, "GelScribe", f"Version {__version__}<br>"
+                    f"<a href='https://github.com/pratiman-de' style='color:{theme.C['link']}'>github.com/pratiman-de</a>"
+                    "<br>Copyright © 2026 Pratiman De", ("OK",), title="About GelScribe", rich=True, icon_size=64)

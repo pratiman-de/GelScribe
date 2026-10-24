@@ -99,7 +99,8 @@ def cut_folder(tmp_path) -> Path:
 
 
 def test_3_the_app_asks_before_exporting_or_copying_a_changed_gel(app, tmp_path, monkeypatch):
-    from PySide6.QtWidgets import QFileDialog, QMessageBox
+    from PySide6.QtWidgets import QFileDialog
+    from gelscribe.app.dialogs import MessageDialog
     w = open_project(app, changed_copy(tmp_path))
     assert w.ws.changed_warnings() == [CHANGED] and w.ws.export_info().description.startswith(CHANGED + "\nGelScribe figure.")
     seen, out = [], tmp_path / "figure.png"
@@ -111,12 +112,12 @@ def test_3_the_app_asks_before_exporting_or_copying_a_changed_gel(app, tmp_path,
             next(b for b in box.buttons() if b.text().replace("&", "") == label).click()
             return 0
         return exec_
-    monkeypatch.setattr(QMessageBox, "exec", answer("Cancel"))
+    monkeypatch.setattr(MessageDialog, "exec", answer("Cancel"))
     w.export("png")
     w.copy_figure()
     assert not out.exists() and len(seen) == 2
     assert seen[0] == ("A gel's image has changed", CHANGED, ["Cancel", "Export Anyway"])
-    monkeypatch.setattr(QMessageBox, "exec", answer("Export Anyway"))
+    monkeypatch.setattr(MessageDialog, "exec", answer("Export Anyway"))
     w.export("png")
     assert out.is_file() and len(seen) == 3
     close(w)
