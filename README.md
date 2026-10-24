@@ -12,29 +12,30 @@ records what was done.
 
 ## Download
 
-**Mac** (macOS 26 or later, Apple silicon): download `GelScribe.dmg` from [Releases](../../releases), open it and
-drag GelScribe into Applications (or download `GelScribe.zip` and unzip it). The app isn't notarized, so macOS blocks the first launch. Open it once, then go to
-System Settings › Privacy & Security and click Open Anyway.
-If macOS says GelScribe "is damaged and can't be opened", it isn't: that's how recent macOS reacts to downloaded
-apps that aren't notarized. Run this once in Terminal, then open it as usual:
+Get the latest version from [Releases](../../releases).
+
+**Mac** (macOS 26 or later, Apple silicon): download `GelScribe.dmg`, open it and drag GelScribe into Applications.
+The app isn't notarized, so macOS blocks the first launch. Open it once, then go to System Settings › Privacy &
+Security and click Open Anyway. If macOS says GelScribe "is damaged and can't be opened", it isn't: that's how recent
+macOS reacts to downloaded apps that aren't notarized. Run this once in Terminal, then open it as usual:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/GelScribe.app
 ```
 
-**Windows**: download `GelScribe-Setup.exe` from [Releases](../../releases) when it's there and run it. It installs
-GelScribe for you alone without admin rights, or for everyone if you choose that, and adds a Start menu shortcut.
-Or download `GelScribe-Windows.zip`, unzip it and run `GelScribe.exe` from the unzipped folder, with nothing to install.
-Windows SmartScreen shows "Windows protected your PC" the first time, because the program isn't signed: click
-More info › Run anyway. `gelscribe-cli.exe` in the same folder is the [command-line tool](#command-line).
+**Windows**: download `GelScribe-Setup.exe` and run it. It installs GelScribe for you alone without admin rights, or
+for everyone if you choose that, and adds a Start menu shortcut. Windows SmartScreen shows "Windows protected your PC"
+the first time, because the program isn't signed: click More info › Run anyway. The installer also puts
+`gelscribe-cli.exe`, the [command-line tool](#command-line), in the install folder.
 
-**Linux, Intel or older Macs, and Windows without the zip**: use the Python version, which has the same tools and reads the same
-project files. There's nothing to install from here: on this page click Code › Download ZIP, unzip it, and open the
-`python` folder. Then open `GelScribe.bat` on Windows, `GelScribe.command` on a Mac or `GelScribe.sh` on Linux
-(Python 3.11 to 3.14). [Setting up the Python version](#setting-up-the-python-version).
+**Linux, Intel or older Macs**: use the Python version, which has the same tools and reads the same project files.
+There's nothing to install from here: on this page click Code › Download ZIP, unzip it, and open the `python` folder.
+Then open `GelScribe.command` on a Mac or `GelScribe.sh` on Linux (Python 3.11 to 3.14). `GelScribe.bat` does the same
+on Windows. [Setting up the Python version](#setting-up-the-python-version).
 
-GelScribe checks GitHub once a day for a newer release and offers a link to it. It sends nothing but that request,
-and you can turn it off in Settings.
+GelScribe checks GitHub once a day for a newer release and offers a link to it. It sends nothing but that request.
+Turn it off in Settings (the General tab on the Mac), or check by hand with Check for Updates… in the GelScribe menu
+on the Mac or the Help menu in the Python version.
 
 ## How it works
 
@@ -83,7 +84,7 @@ which adds a row above the lane labels.
 | `µM: \|0{L\|P}\|10{L\|P}` | The same, with lane 1 (the ladder) left blank and the row titled µM. |
 | `WT{0{L\|P}\|10{L\|P}}\|KO{0{L\|P}\|10{L\|P}}` | Braces nest: three rows, with WT and KO on top. |
 | `Strain, µM: WT{…}\|KO{…}` | Titles for two rows, top row first. |
-| `GFP\nonly` | `\n` starts a second line inside a label. |
+| `Control\nonly` | `\n` starts a second line inside a label. |
 
 You can type the labels before or after placing the lanes, and change them later in the Aa tab or by clicking a label
 on the figure.
@@ -161,12 +162,33 @@ folder to your PATH on Windows, or on a Mac or Linux link the script into a fold
 
 ## LLM access (Mac)
 
-Settings › LLM Access lets an assistant such as Claude work on your projects over MCP. It can read projects, set labels,
-ladders and band names, and render previews. It can't change the image, Keep original pixels or brightness and
-contrast, and everything it does can be undone. The Python version doesn't have it.
+An assistant such as Claude can work on your projects over MCP. It can read projects, place lane dividers, set labels,
+ladders and band names, render previews and export figures. It can't change the image, Keep original pixels or
+brightness and contrast, and in the live app every change is one undo step. The Python version doesn't have this.
 
-The access token is kept in your Keychain, which GelScribe only opens while LLM access is on. After you install a new
-version, macOS may then ask once whether GelScribe can use it; click Always Allow.
+There are two ways to connect it. Settings › LLM Access shows both commands with a Copy button.
+
+- **The open app.** Turn on Allow LLM access, then copy the `claude mcp add` command shown there. The assistant works in
+  the windows you have open. The server listens on 127.0.0.1 only and needs a token, which is kept in your Keychain.
+  GelScribe only opens the Keychain while LLM access is on. After you install a new version, macOS may ask once whether
+  GelScribe can use it; click Always Allow.
+- **Project files, without the app.** The helper inside the app serves MCP on the project files directly. In Claude
+  Desktop, add this to `claude_desktop_config.json` (Settings › Developer › Edit Config) and restart it:
+
+```json
+{
+  "mcpServers": {
+    "gelscribe": {
+      "command": "/Applications/GelScribe.app/Contents/Helpers/gelscribe",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+In Claude Code the same helper is added with `claude mcp add gelscribe -- /Applications/GelScribe.app/Contents/Helpers/gelscribe mcp`.
+An organization can block adding MCP servers in Claude Code. If the command is refused, ask whoever manages your
+account, or use Claude Desktop.
 
 ## Setting up the Python version
 
@@ -223,7 +245,7 @@ cd mac
 That makes `mac/GelScribe.app`. `swift test` runs the tests; a few need a gel image that isn't in the repository and
 are skipped.
 
-The Python version runs without a build (the .exe above is optional). To run its tests, go to the `python` folder and use the Python GelScribe runs
+The Python version runs without a build. To run its tests, go to the `python` folder and use the Python GelScribe runs
 from (its path is in `python.txt`; on Windows that's `pythonw.exe`, so use the `python.exe` next to it):
 
 ```bash
@@ -236,8 +258,8 @@ python -m pytest
 On a Windows PC, double-click `python\build-exe.bat`. Python is downloaded automatically into `python\build\python` on the
 first run (python.org's official Python 3.13, from its NuGet package) and nothing else on the PC is changed: no other
 Python is used, and Anaconda can't be used because its copies of Windows DLLs clash with Qt's. The script installs the
-requirements and PyInstaller into that Python and builds `python\dist\GelScribe-Windows.zip`. The first build takes a few
-minutes. The recipe is `python\build\GelScribe.spec`.
+requirements and PyInstaller into that Python and builds the program in `python\dist\GelScribe`, with `GelScribe.exe` and `gelscribe-cli.exe`, and zips it as
+`python\dist\GelScribe-Windows.zip`. The first build takes a few minutes. The recipe is `python\build\GelScribe.spec`.
 
 If [Inno Setup 6](https://jrsoftware.org/isdl.php) (free, 6.3 or newer) is installed, the same script also makes the
 installer, `python\dist\GelScribe-Setup.exe`, from `python\build\GelScribe.iss`. Without Inno Setup it says so and

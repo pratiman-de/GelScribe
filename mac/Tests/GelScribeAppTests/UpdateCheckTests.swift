@@ -25,6 +25,18 @@ private final class Counter: @unchecked Sendable { var n = 0; var agent: String?
         #expect(!UpdateCheck.isNewer("nightly", than: "0.1"))
     }
 
+    @Test func aSuffixAfterTheNumbersIsIgnored() throws {
+        // the same rules as the Python version (test_updates.py): a release tagged v0.2.0-hotfix is still found
+        #expect(UpdateCheck.parts("v0.2.0-beta") == [0, 2, 0] && UpdateCheck.parts("1.2.3rc1") == [1, 2, 3])
+        #expect(UpdateCheck.parts("nightly") == nil && UpdateCheck.parts("") == nil && UpdateCheck.parts("v") == nil)
+        #expect(UpdateCheck.isNewer("0.2.0-beta", than: "0.1.1") && !UpdateCheck.isNewer("0.1.1-hotfix", than: "0.1.1"))
+        let tagged = Data(("{\"tag_name\":\"v0.2.0-hotfix\",\"html_url\":\"https://github.com/x/y/releases/tag/v0.2.0-hotfix\"," +
+                           "\"body\":\"## What's new\\n\\nFaster\"}").utf8)
+        let r = try #require(UpdateCheck.parseRelease(tagged))
+        #expect(r.version == "0.2.0-hotfix")
+        #expect(UpdateCheck.excerpt(r.notes) == "What's new\nFaster")   // headings without their #, as in Python
+    }
+
     @Test func parsesRelease() throws {
         let r = try #require(UpdateCheck.parseRelease(sample))
         #expect(r.version == "0.1.2")

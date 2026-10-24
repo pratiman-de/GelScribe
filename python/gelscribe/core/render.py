@@ -135,6 +135,8 @@ def export_info(p: GelProject, source_sha256: Optional[str], resampled_dpi: Opti
         for n, k in enumerate(p.stack_order):
             if k is None:
                 main = "the reference for vertical placement" if p.is_side_by_side else "as above (its lanes are the figure's)"
+                if mixed and p.strict and 0 in copied:   # (as the Mac app orders it: this comes first)
+                    main += f", {COPIED_NOTE}"
                 if mixed and p.turn % 4:   # the headline that said so is the mixed one now
                     main += f", turned {p.turn % 4 * 90}°"
                 if mixed and not p.strict:   # and so is the one that said what was done to this gel's pixels
@@ -146,14 +148,14 @@ def export_info(p: GelProject, source_sha256: Optional[str], resampled_dpi: Opti
                     main += f", shifted {format_size(p.effective_main_shift)} px"
                 if not p.strict and conversion and 0 not in unconverted:
                     main += f", {conversion}"
-                if p.strict and 0 in copied:
-                    main += f", {COPIED_NOTE}"
                 pieces += f" {n + 1}. {p.image}, {main};" if names else f" {n + 1}. {main};"
                 continue
             i, s = k - 1, p.strips[k - 1]
             shift, sc = p.effective_alignment(k)
             keep = p.is_strict(k)
             parts = ["original pixels"] if keep else []
+            if keep and k in copied:
+                parts.append(COPIED_NOTE)
             if s.turn % 4:
                 parts.append(f"turned {s.turn % 4 * 90}°")
             if not keep and s.rotate_deg != 0:
@@ -182,8 +184,6 @@ def export_info(p: GelProject, source_sha256: Optional[str], resampled_dpi: Opti
                     parts.append("inverted")
                 if conversion and k not in unconverted:
                     parts.append(conversion)
-            if keep and k in copied:
-                parts.append(COPIED_NOTE)
             h = f" sha256 {strips[i][0]}" if i < len(strips) and strips[i][0] else ""
             label = f"{s.image}{h}" if names else h.strip()
             pieces += f" {n + 1}. {label + ', ' if label else ''}{', '.join(parts)};"

@@ -5,7 +5,11 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from test_app import app, close, settle, show, win   # noqa: F401 (fixtures)
+from PySide6.QtWidgets import QApplication
+
+QApplication.instance() or QApplication([])   # before anything draws, so this file also passes when run alone
+
+from test_app import app, close, settle, show, win   # noqa: E402,F401 (fixtures)
 from test_gels import cut_blot, piece_png, stack, working
 
 from gelscribe.app.main import Controller
@@ -166,3 +170,26 @@ def test_display_change_reuses_the_cached_levels_and_matches_the_float_path():
     b = w.view_image(p)
     assert w.levels(color=True) is lv and not np.array_equal(a, b)
     assert np.array_equal(b, render_gray(w._processed(color=True), p.display))
+
+
+def test_the_copied_to_all_three_channels_note_sits_where_the_mac_app_puts_it():
+    """The mixed figure's per-gel list is word for word the Mac app's: the "original values, copied …" phrase comes right after
+    "as above (its lanes are the figure's)" or "original pixels", before the turn, the columns and the rest."""
+    from test_gels import piece_png
+    gray = GelPackage.create(piece_png(240, 160, [60, 120], [80]), "g.png")
+    gray.add_strip(colour_png(240, 160), "c.png")
+    p = gray.project
+    p.turn = 1   # strict, gray, turned; the colour gel below is processed
+    w = working(gray)
+    note = stacked.StackedFigure(p, w[0], w[1]).info().description
+    assert "1. g.png, as above (its lanes are the figure's), original values, copied to all three channels, turned 90°, columns " in note
+    assert "original values, copied to all three channels" not in note.split("2. ")[1]
+    colour = GelPackage.create(colour_png(240, 160), "c.png")
+    colour.add_strip(piece_png(240, 160, [60, 120], [80]), "g.png")
+    q = colour.project
+    q.strict = False
+    q.strips[0].strict = True
+    q.strips[0].turn = 1
+    w = working(colour)
+    note = stacked.StackedFigure(q, w[0], w[1]).info().description
+    assert ", original pixels, original values, copied to all three channels, turned 90°, columns " in note.split("2. ")[1]

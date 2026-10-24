@@ -27,13 +27,19 @@ enum UpdateCheck {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
     }
 
-    /// "v0.1.1" or "0.1.1" as numbers; nil when it isn't dotted numbers.
+    /// "v0.1.1" or "0.1.1" as numbers; nil when it doesn't start with dotted numbers. A suffix ("0.2.0-beta") is ignored, as in the
+    /// Python version: the numbers before it are what counts.
     nonisolated static func parts(_ tag: String) -> [Int]? {
-        var s = tag.trimmingCharacters(in: .whitespaces)
+        var s = tag.trimmingCharacters(in: .whitespacesAndNewlines)
         if s.hasPrefix("v") || s.hasPrefix("V") { s.removeFirst() }
-        let pieces = s.split(separator: ".", omittingEmptySubsequences: false).map { Int($0) }
-        guard !pieces.isEmpty, !pieces.contains(nil) else { return nil }
-        return pieces.compactMap { $0 }
+        var out: [Int] = []
+        for piece in s.split(separator: ".", omittingEmptySubsequences: false) {
+            let digits = piece.prefix { $0.isASCII && $0.isNumber }
+            guard !digits.isEmpty, let n = Int(digits) else { break }
+            out.append(n)
+            if digits.count != piece.count { break }   // "1-beta": the number, then the suffix ends it
+        }
+        return out.isEmpty ? nil : out
     }
 
     /// Numeric, part by part (0.10 > 0.9, 0.1 < 0.1.1); missing parts count as 0.
@@ -51,13 +57,14 @@ enum UpdateCheck {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tag = json["tag_name"] as? String, parts(tag) != nil,
               let link = json["html_url"] as? String, let url = URL(string: link), url.scheme == "https" else { return nil }
-        let version = tag.trimmingCharacters(in: .whitespaces).drop { $0 == "v" || $0 == "V" }
+        let version = tag.trimmingCharacters(in: .whitespacesAndNewlines).drop { $0 == "v" || $0 == "V" }
         return ReleaseInfo(version: String(version), url: url, notes: json["body"] as? String ?? "")
     }
 
-    /// The first lines of the release notes, blank lines dropped.
+    /// The first lines of the release notes, blank lines dropped, markdown headings without their #.
     nonisolated static func excerpt(_ notes: String, maxLines: Int = 6) -> String {
-        notes.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+        notes.split(whereSeparator: \.isNewline)
+            .map { String($0.trimmingCharacters(in: .whitespaces).drop { $0 == "#" }).trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }.prefix(maxLines).joined(separator: "\n")
     }
 

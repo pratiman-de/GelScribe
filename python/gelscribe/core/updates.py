@@ -60,7 +60,7 @@ def parse_release(data) -> Optional[Release]:
         tag = str(data["tag_name"]).strip()
         version = tag[1:] if tag[:1] in "vV" else tag
         url = str(data["html_url"])
-        if parse_version(version) is None or not url:
+        if parse_version(version) is None or not url.startswith("https://"):   # (the Mac app takes only https links too)
             return None
         return Release(version, url, str(data.get("body") or ""))
     except (ValueError, KeyError, TypeError, AttributeError):

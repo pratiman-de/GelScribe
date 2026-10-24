@@ -26,6 +26,17 @@ def test_version_order():
     assert updates.parse_version("v0.1.1") == (0, 1, 1) and updates.parse_version("") is None
 
 
+def test_a_suffix_after_the_numbers_is_ignored_and_a_link_must_be_https():
+    # (the same rules in the Mac app: UpdateCheckTests.aSuffixAfterTheNumbersIsIgnored)
+    assert updates.parse_version("v0.2.0-beta") == (0, 2, 0) and updates.parse_version("1.2.3rc1") == (1, 2, 3)
+    assert updates.is_newer("0.2.0-beta", "0.1.1") and not updates.is_newer("0.1.1-hotfix", "0.1.1")
+    r = updates.parse_release(json.dumps({"tag_name": "v0.2.0-hotfix", "html_url": "https://github.com/x/y/releases/tag/v0.2.0-hotfix"}))
+    assert r is not None and r.version == "0.2.0-hotfix" and updates.check(lambda v: json.dumps({
+        "tag_name": "v0.2.0-hotfix", "html_url": "https://github.com/x/y"}), "0.1.1").status == "newer"
+    for link in ("file:///etc/passwd", "http://github.com/x", "javascript:alert(1)", ""):
+        assert updates.parse_release(json.dumps({"tag_name": "v9", "html_url": link})) is None
+
+
 def test_parse_release():
     r = updates.parse_release(SAMPLE)
     assert r.version == "0.3" and r.url.endswith("/tag/v0.3") and "Faster export" in r.notes
@@ -141,7 +152,7 @@ def test_errors_are_silent_and_not_recorded(ctl):
 
 
 def test_manual_check_reports(ctl):
-    ctl.updates.checker.fetch = lambda v: json.dumps({"tag_name": "v0.1.1", "html_url": "u"})
+    ctl.updates.checker.fetch = lambda v: json.dumps({"tag_name": "v0.1.1", "html_url": "https://github.com/x/y"})
     ctl.updates.check(manual=True)
     assert wait(ctl, lambda: ctl.updates.alert is not None)
     assert ctl.updates.alert.text() == "GelScribe 0.1.1 is the latest version."

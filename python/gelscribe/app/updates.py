@@ -72,7 +72,11 @@ class UpdateChecker(QObject):
 
     def start(self, manual: bool = False):
         def work():
-            self.finished.emit(updates.check(self.fetch, __version__), manual)
+            result = updates.check(self.fetch, __version__)
+            try:
+                self.finished.emit(result, manual)
+            except RuntimeError:   # the app was closed while the request was out: nobody is left to tell
+                pass
         self.thread = threading.Thread(target=work, name="GelScribe update check", daemon=True)
         self.thread.start()
 

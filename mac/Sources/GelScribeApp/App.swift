@@ -27,6 +27,7 @@ struct GelScribeApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
         AppAppearance.apply()   // dark unless View › Appearance says light
+        CloseGuard.install()    // the short "Want to save your changes?" sheet for untitled documents
     }
 
     private var titleBarMonitor: Any?
