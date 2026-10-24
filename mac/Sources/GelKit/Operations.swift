@@ -5,41 +5,59 @@ public enum GelOps {
     // MARK: lanes
 
     /// A vertical divider through the clicked point (one click per gap between lanes).
-    public static func addDivider(_ p: inout GelProject, x: Double, y: Double, imageWidth: Int, imageHeight: Int) {
-        guard Sane.isCoordinate(x), Sane.isCoordinate(y) else { return }
-        p.lanes.dividers.append(LaneDivider(x: x, dotY: y))
-        p.lanes.dividers.sort { ($0.xTop + $0.xBottom) < ($1.xTop + $1.xBottom) }
-        p.syncLaneCenters(imageWidth: imageWidth, imageHeight: imageHeight)
+    /// `gel`: side by side, a strip's number adds it to that gel's own lanes (dividers are in that gel's pixels).
+    public static func addDivider(_ p: inout GelProject, x: Double, y: Double, imageWidth: Int, imageHeight: Int, gel: Int? = nil) {
+        guard Sane.isCoordinate(x), Sane.isCoordinate(y), gel == nil || (1...max(p.strips.count, 1)).contains(gel!) && !p.strips.isEmpty else { return }
+        var l = p.lanes(ofGel: gel)
+        l.dividers.append(LaneDivider(x: x, dotY: y))
+        l.dividers.sort { ($0.xTop + $0.xBottom) < ($1.xTop + $1.xBottom) }
+        p.setLanes(l, ofGel: gel)
+        p.syncLaneCenters(imageWidth: imageWidth, imageHeight: imageHeight, gel: gel)
     }
 
     /// Replaces all dividers with vertical ones at `xs` (positions that aren't numbers are left out). With none, the lanes
     /// go too, so no lane centres are left behind without dividers.
-    public static func setDividers(_ p: inout GelProject, xs: [Double], imageWidth: Int, imageHeight: Int) {
+    public static func setDividers(_ p: inout GelProject, xs: [Double], imageWidth: Int, imageHeight: Int, gel: Int? = nil) {
+        guard gel == nil || (gel! >= 1 && gel! <= p.strips.count) else { return }
         // dot a little inside the visible gel, clear of the end handle
-        let c = p.effectiveCrop(width: imageWidth, height: imageHeight)
-        let y = (c.y0 + c.height * 0.14).rounded()
-        p.lanes.dividers = xs.filter(Sane.isCoordinate).sorted().map { LaneDivider(x: $0, dotY: y) }
-        if p.lanes.dividers.isEmpty { p.lanes.centers = [] }
-        p.syncLaneCenters(imageWidth: imageWidth, imageHeight: imageHeight)
+        let top: Double, height: Double
+        if let k = gel {
+            let r = p.strips[k - 1].usedRows(height: imageHeight)
+            (top, height) = (r.top, r.bottom - r.top)
+        } else {
+            let c = p.effectiveCrop(width: imageWidth, height: imageHeight)
+            (top, height) = (c.y0, c.height)
+        }
+        let y = (top + height * 0.14).rounded()
+        var l = p.lanes(ofGel: gel)
+        l.dividers = xs.filter(Sane.isCoordinate).sorted().map { LaneDivider(x: $0, dotY: y) }
+        if l.dividers.isEmpty { l.centers = [] }
+        p.setLanes(l, ofGel: gel)
+        p.syncLaneCenters(imageWidth: imageWidth, imageHeight: imageHeight, gel: gel)
     }
 
     /// Fallback for the CLI/LLM: detect lane centers, then place dividers midway between them.
     @discardableResult
-    public static func autoDividers(_ p: inout GelProject, _ w: WorkingImage, count: Int?) -> LaneFit {
-        let fit = Detect.lanes(in: w.darkness(bandsDark: p.display.bandsDark), count: count)
+    public static func autoDividers(_ p: inout GelProject, _ w: WorkingImage, count: Int?, gel: Int? = nil) -> LaneFit {
+        let bandsDark = gel.map { $0 >= 1 && $0 <= p.strips.count ? p.strips[$0 - 1].display.bandsDark : p.display.bandsDark } ?? p.display.bandsDark
+        let fit = Detect.lanes(in: w.darkness(bandsDark: bandsDark), count: count)
         guard fit.centers.count >= 2 else { return fit }
         let mids = zip(fit.centers, fit.centers.dropFirst()).map { ($0 + $1) / 2 }
-        p.lanes.outerLanes = true
-        setDividers(&p, xs: mids, imageWidth: w.width, imageHeight: w.height)
+        var l = p.lanes(ofGel: gel)
+        l.outerLanes = true
+        p.setLanes(l, ofGel: gel)
+        setDividers(&p, xs: mids, imageWidth: w.width, imageHeight: w.height, gel: gel)
         return fit
     }
 
     /// Lane geometry, from dividers or (for dividerless configs) from `centers`.
-    public static func geometry(_ p: GelProject, imageWidth: Int, imageHeight: Int) -> LaneGeometry? {
-        if let g = LaneGeometry.resolve(p.lanes, imageWidth: Double(imageWidth), imageHeight: Double(imageHeight)) { return g }
-        let c = p.lanes.centers
+    /// `gel`: a strip's number gives that gel's own lanes (side by side), `imageWidth`/`imageHeight` being that gel's.
+    public static func geometry(_ p: GelProject, imageWidth: Int, imageHeight: Int, gel: Int? = nil) -> LaneGeometry? {
+        let lanes = p.lanes(ofGel: gel)
+        if let g = LaneGeometry.resolve(lanes, imageWidth: Double(imageWidth), imageHeight: Double(imageHeight)) { return g }
+        let c = lanes.centers
         guard !c.isEmpty else { return nil }
-        let half = p.lanes.width / 0.85 / 2
+        let half = lanes.width / 0.85 / 2
         var lines: [LaneGeometry.Line] = [LaneGeometry.Line(xTop: c[0] - half, xBottom: c[0] - half)]
         for (a, b) in zip(c, c.dropFirst()) { let m = (a + b) / 2; lines.append(.init(xTop: m, xBottom: m)) }
         lines.append(.init(xTop: c[c.count - 1] + half, xBottom: c[c.count - 1] + half))
@@ -70,7 +88,8 @@ public enum GelOps {
         }
         let centers = p.lanes.centers
         if var l = p.ladder {
-            let x = l.lane >= 1 && l.lane <= centers.count ? centers[l.lane - 1] : cx
+            let x = p.isSideBySide ? p.ladderLaneX(gel: nil, lane: l.lane)?.x ?? cx
+                : l.lane >= 1 && l.lane <= centers.count ? centers[l.lane - 1] : cx
             for i in l.bands.indices where l.bands[i].strip == nil { l.bands[i].y = turn(x, l.bands[i].y).1.rounded() }
             if let uy = l.unitY, l.unitStrip == nil { l.unitY = turn(x, uy).1.rounded() }
             p.ladder = l
@@ -113,6 +132,7 @@ public enum GelOps {
 
     /// Lane `n`'s center in strip `k`'s own pixels (lanes are the main image's, lined up through the alignment).
     public static func laneX(_ p: GelProject, lane n: Int, strip k: Int) -> Double? {
+        if p.isSideBySide { return k >= 1 && k <= p.strips.count ? p.ladderLaneX(gel: k, lane: n)?.x : nil }   // each gel's own lanes
         guard n >= 1, n <= p.lanes.centers.count, k >= 1, k <= p.strips.count else { return nil }
         let a = p.laneAlignment(k)   // the lanes are the lanes gel's, wherever it sits
         return a.scale * p.lanes.centers[n - 1] + a.shift
@@ -158,6 +178,16 @@ public enum GelOps {
         if let k {
             guard k >= 1, k <= p.strips.count else { return }
             p.strips[k - 1].turn = (p.strips[k - 1].turn + q) % 4
+            if var l = p.strips[k - 1].lanes {   // this gel's own lanes (side by side) turn with it, or go when lanes would run the other way
+                if q == 2 {
+                    l.dividers = l.dividers.map {
+                        var d = $0
+                        (d.xTop, d.xBottom, d.dotY) = (w - 1 - $0.xBottom, w - 1 - $0.xTop, h - 1 - $0.dotY)
+                        return d
+                    }.sorted { ($0.xTop + $0.xBottom) < ($1.xTop + $1.xBottom) }
+                } else { l.dividers = []; l.centers = [] }
+                p.strips[k - 1].lanes = l
+            }
             if q == 2 {
                 let s = p.strips[k - 1]
                 (p.strips[k - 1].top, p.strips[k - 1].bottom) = (s.bottom.map { h - $0 }, s.top.map { h - $0 })
@@ -204,6 +234,7 @@ public enum GelOps {
             removeAnnotations(&p) { $0.strip == k }   // the other names keep their own sizes
         }
         if k == nil && q == 2 { p.syncLaneCenters(imageWidth: W, imageHeight: H) }
+        if let k, q == 2, p.strips.indices.contains(k - 1), p.strips[k - 1].lanes != nil { p.syncLaneCenters(imageWidth: W, imageHeight: H, gel: k) }
     }
 
     /// Takes strip `k` out, with its ticks and names; the gels under it move up one.
@@ -456,10 +487,10 @@ public enum GelOps {
 
     /// Bands in one lane with apparent sizes from the ladder. On a tilted gel these are only as good as the tilt allows.
     public static func measureLane(_ p: GelProject, _ w: WorkingImage, lane: Int) -> [MeasuredBand] {
-        guard lane >= 1, lane <= p.laneCount else { return [] }
+        guard let info = p.mainLaneInfo(lane) else { return [] }
         let dark = w.darkness(bandsDark: p.display.bandsDark)
         let cal = p.ladder.flatMap(Calibration.init)
-        return Detect.bands(in: dark, center: p.lanes.centers[lane - 1], width: p.lanes.width).map { b in
+        return Detect.bands(in: dark, center: info.x, width: info.width).map { b in
             let s = cal?.size(atY: b.y)
             return MeasuredBand(y: b.y, fwhm: b.fwhm, prominence: b.prominence,
                                 apparentSize: s.map { ($0.size * 10).rounded() / 10 }, unit: p.ladder?.unit,

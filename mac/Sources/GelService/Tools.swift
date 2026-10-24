@@ -150,8 +150,8 @@ public enum GelTools {
                 let lane = try a.optInt("lane", 1...Limits.lanes)
                 let r: JSONValue = try await host.access(try a.reqString("project"), action: nil) { p, w in
                     let n = lane ?? p.ladder?.lane ?? 1
-                    guard n >= 1, n <= p.laneCount else { throw MCPToolError("lane \(n) doesn't exist (have \(p.laneCount))") }
-                    let bands = Detect.bands(in: w.darkness(bandsDark: p.display.bandsDark), center: p.lanes.centers[n - 1], width: p.lanes.width)
+                    guard let info = p.mainLaneInfo(n) else { throw MCPToolError(p.mainLaneProblem(n)) }
+                    let bands = Detect.bands(in: w.darkness(bandsDark: p.display.bandsDark), center: info.x, width: info.width)
                     return ["lane": .number(Double(n)), "bands": .array(bands.map { ["y": .number($0.y), "fwhm": .number($0.fwhm), "prominence": .number($0.prominence)] })]
                 }
                 return .json(r)
@@ -188,10 +188,11 @@ public enum GelTools {
                     var ladder = p.ladder ?? Ladder()
                     if let lane { ladder.lane = lane }
                     guard ladder.lane >= 1, ladder.lane <= max(1, p.laneCount) else { throw MCPToolError("lane \(ladder.lane) doesn't exist") }
+                    if p.isSideBySide, p.laneCount > 0, p.mainLaneInfo(ladder.lane) == nil { throw MCPToolError(p.mainLaneProblem(ladder.lane)) }
                     if let side { ladder.side = side }
                     let rows = p.figureRows(strip: nil, width: w.width, height: w.height)
                     let dark = w.darkness(bandsDark: p.display.bandsDark)
-                    let cx = p.laneCount >= ladder.lane ? p.lanes.centers[ladder.lane - 1] : 0
+                    let cx = p.mainLaneInfo(ladder.lane)?.x ?? 0
                     var notes: [String] = []
                     var mine: [LadderBand] = []
                     for (y0, size, ignore) in bands {
@@ -250,9 +251,9 @@ public enum GelTools {
                     var y = p.clampY(y0, strip: nil, width: w.width, height: w.height)   // a name belongs inside the figure's rows
                     if y != y0 { notes.append(movedNote("The name at y \(Int(y0.rounded()))", to: y, rows)) }
                     if snap, p.laneCount > 0 {
-                        let n = lane ?? (s == .right ? p.laneCount : 1)
-                        guard n >= 1, n <= p.laneCount else { throw MCPToolError("lane \(n) doesn't exist (have \(p.laneCount))") }
-                        y = Detect.snapBand(in: w.darkness(bandsDark: p.display.bandsDark), x: p.lanes.centers[n - 1], y: y, laneWidth: p.lanes.width, rows: rows) ?? y
+                        let n = lane ?? (s == .right ? p.laneNumbers(ofGel: nil).upperBound - 1 : p.laneNumbers(ofGel: nil).lowerBound)
+                        guard let info = p.mainLaneInfo(n) else { throw MCPToolError(p.mainLaneProblem(n)) }
+                        y = Detect.snapBand(in: w.darkness(bandsDark: p.display.bandsDark), x: info.x, y: y, laneWidth: info.width, rows: rows) ?? y
                     }
                     let end = y2.map { p.clampY($0, strip: nil, width: w.width, height: w.height) }
                     p.annotations.append(BandAnnotation(y: y, y2: end, text: text, marker: marker, side: s, italic: italic))
@@ -277,7 +278,7 @@ public enum GelTools {
                     inputSchema: schema(["project": project, "lane": ["type": "integer"]], ["project", "lane"]), annotations: readOnly) { a in
                 let lane = try a.reqInt("lane", 1...Limits.lanes)
                 let bands: [GelOps.MeasuredBand] = try await host.access(try a.reqString("project"), action: nil) { p, w in
-                    guard lane >= 1, lane <= p.laneCount else { throw MCPToolError("lane \(lane) doesn't exist (have \(p.laneCount))") }
+                    guard p.mainLaneInfo(lane) != nil else { throw MCPToolError(p.mainLaneProblem(lane)) }
                     // a size that can't be worked out (two ticks on one row) is left out rather than written as a non-number
                     return GelOps.measureLane(p, w, lane: lane).map { b in
                         var b = b
@@ -420,6 +421,10 @@ public enum GelTools {
                 "separator": .string(p.separatorColor.name),
                 "separator_width": .number(p.effectiveSeparatorWidth),
                 "title": p.title.map { .string($0) } ?? .null,
+                // "top_to_bottom" or "side_by_side". Side by side every gel has its own lanes (see "gels"[].own_lanes), lanes are numbered
+                // continuously from the left (so "lanes".count is all of them while "centers" and "dividers_x" are the lanes gel's), and
+                // each gel's "shift" and "scale" act vertically against the gel with the lanes
+                "arrangement": .string(p.isSideBySide ? "side_by_side" : "top_to_bottom"),
                 "crop": ["x0": .number(c.x0), "y0": .number(c.y0), "x1": .number(c.x1), "y1": .number(c.y1)],
                 "lanes": ["count": .number(Double(p.laneCount)), "outer_lanes": .bool(p.lanes.outerLanes),
                           "dividers_x": .array(p.lanes.dividers.map { .number((($0.xTop + $0.xBottom) / 2).rounded()) }),
@@ -447,6 +452,13 @@ public enum GelTools {
                         o = ["gel": .number(Double(n + 1)), "image": .string(p.image), "lanes": .bool(true), "strict": .bool(p.strict)]
                     }
                     if p.hasOwnLadder(k) { o["own_ladder"] = .bool(true) }
+                    if p.isSideBySide {
+                        let l = p.lanes(ofGel: k), r = p.laneNumbers(ofGel: k)
+                        o["own_lanes"] = ["count": .number(Double(l.centers.count)), "first_lane": r.isEmpty ? .null : .number(Double(r.lowerBound)),
+                                          "outer_lanes": .bool(l.outerLanes),
+                                          "dividers_x": .array(l.dividers.map { .number((($0.xTop + $0.xBottom) / 2).rounded()) }),
+                                          "centers": .array(l.centers.map { .number($0) })]
+                    }
                     return .object(o)
                 }),
             ]
@@ -558,21 +570,33 @@ enum Preview {
             let cyan = CGColor(red: 0, green: 0.7, blue: 1, alpha: 0.9), yellow = CGColor(red: 1, green: 0.75, blue: 0, alpha: 0.9)
             ctx.setLineWidth(1.2 / scale * 2)
             ctx.setStrokeColor(cyan)
-            for d in p.lanes.dividers {
-                ctx.beginPath()
-                ctx.move(to: layout.point(x: d.x(atY: crop.y0, height: Hh), y: crop.y0))
-                ctx.addLine(to: layout.point(x: d.x(atY: crop.y1, height: Hh), y: crop.y1))
-                ctx.strokePath()
-            }
-            let font = FontSpec(family: "Helvetica", size: 6, bold: true)
-            for (i, c) in p.lanes.centers.enumerated() {
-                let pt = layout.point(x: c, y: crop.y0)
-                let t = FigureText(string: "\(i + 1)", font: font, origin: CGPoint(x: pt.x, y: pt.y + 8), align: .center,
-                                   rotation: 0, role: .title, bounds: .zero)
-                ctx.setFillColor(cyan)
-                ctx.fillEllipse(in: CGRect(x: pt.x - 5, y: pt.y + 1.5, width: 10, height: 9))
-                ctx.setFillColor(CGColor(gray: 0, alpha: 1))
-                FigureRenderer.drawText(t, in: ctx)
+            // every gel's own lanes side by side (numbered across the figure), else the lanes gel's
+            let sets: [(piece: StackGeometry.Piece?, lanes: Lanes, first: Int)] = fig.stack.sideBySide
+                ? fig.stack.pieces.map { ($0, p.lanes(ofGel: $0.strip), p.laneNumbers(ofGel: $0.strip).lowerBound) }
+                : [(nil, p.lanes, 1)]
+            for set in sets {
+                let hh = Double(set.piece?.height ?? w.height)
+                func at(_ x: Double, _ y: Double) -> CGPoint {   // a gel pixel x, a figure row y
+                    layout.point(x: set.piece.map { $0.toFigure(x: x, y: 0).x } ?? x, y: y)
+                }
+                let top = set.piece?.top ?? crop.y0, bottom = set.piece?.bottom ?? crop.y1
+                let ty = set.piece?.sourceTop ?? crop.y0, by = set.piece?.sourceBottom ?? crop.y1
+                for d in set.lanes.dividers {
+                    ctx.beginPath()
+                    ctx.move(to: at(d.x(atY: ty, height: hh), top))
+                    ctx.addLine(to: at(d.x(atY: by, height: hh), bottom))
+                    ctx.strokePath()
+                }
+                let font = FontSpec(family: "Helvetica", size: 6, bold: true)
+                for (i, c) in set.lanes.centers.enumerated() {
+                    let pt = at(c, top)
+                    let t = FigureText(string: "\(set.first + i)", font: font, origin: CGPoint(x: pt.x, y: pt.y + 8), align: .center,
+                                       rotation: 0, role: .title, bounds: .zero)
+                    ctx.setFillColor(cyan)
+                    ctx.fillEllipse(in: CGRect(x: pt.x - 5, y: pt.y + 1.5, width: 10, height: 9))
+                    ctx.setFillColor(CGColor(gray: 0, alpha: 1))
+                    FigureRenderer.drawText(t, in: ctx)
+                }
             }
             if let l = p.ladder {
                 ctx.setStrokeColor(yellow)

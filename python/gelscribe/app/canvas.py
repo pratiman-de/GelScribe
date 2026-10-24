@@ -7,7 +7,7 @@ import sys
 from typing import Optional
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import (QColor, QFont, QFontMetricsF, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen,
+from PySide6.QtGui import (QColor, QFont, QFontMetricsF, QImage, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPen,
                            QPolygonF, QWheelEvent)
 from PySide6.QtWidgets import QWidget
 
@@ -202,7 +202,10 @@ class Canvas(QWidget):
         for n, (q, img) in enumerate(layers):
             if n > 0:
                 above = layers[n - 1][0]
-                p.fillRect(QRectF(g.x, g.y + (above.bottom - crop.y0) * k, g.w, (q.top - above.bottom) * k), line)
+                if q.side_by_side:   # a vertical line the figure's whole height, between the columns
+                    p.fillRect(QRectF(g.x + (above.right - crop.x0) * k, g.y, (q.left - above.right) * k, g.h), line)
+                else:
+                    p.fillRect(QRectF(g.x, g.y + (above.bottom - crop.y0) * k, g.w, (q.top - above.bottom) * k), line)
             if img is None:
                 continue
             # its picture's kept columns and rows, and where they go (cut at the picture's edges); the figure stays blank white
@@ -214,9 +217,32 @@ class Canvas(QWidget):
             if cx1 <= cx0 or cy1 <= cy0 or x1 <= x0 or y1 <= y0:
                 continue
             sx, sy = to.width() / (x1 - x0), to.height() / (y1 - y0)
+            turn = self.ws.pending_rotation(q.strip)
+            small = self.ws.preview_image(q.strip) if turn else None
+            if small is not None:   # its angle is being changed: the last exact picture, turned by the difference
+                p.save()
+                p.setClipRect(to)
+                p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+                p.translate(to.x() - x0 * sx, to.y() - y0 * sy)
+                p.scale(sx, sy)
+                self._draw_turned(p, small, img.width(), img.height(), turn, self.ws.figure_fill(q.strip))
+                p.restore()
+                continue
             p.drawImage(QRectF(to.x() + (cx0 - x0) * sx, to.y() + (cy0 - y0) * sy, (cx1 - cx0) * sx, (cy1 - cy0) * sy),
                         img, QRectF(cx0, cy0, cx1 - cx0, cy1 - cy0))
         p.restore()
+
+    @staticmethod
+    def _draw_turned(p: QPainter, small: QImage, w: float, h: float, degrees: float, fill: float):
+        """The picture (small, a reduced copy of the one w x h pixels in the painter's units) turned counter-clockwise by degrees
+        about its centre, with the corners it uncovers in the fill gray. A transform of the painter: nothing is resampled at
+        full size."""
+        gray = int(round(min(max(fill, 0.0), 1.0) * 255))
+        p.fillRect(QRectF(0, 0, w, h), QColor(gray, gray, gray))
+        p.translate(w / 2, h / 2)
+        p.rotate(-degrees)   # Qt turns clockwise for a positive angle (y runs down)
+        p.translate(-w / 2, -h / 2)
+        p.drawImage(QRectF(0, 0, w, h), small)
 
     def _draw_full(self, p: QPainter):
         ws = self.ws
@@ -228,7 +254,16 @@ class Canvas(QWidget):
             return
         p.save()
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, self.scale() * (self.devicePixelRatioF() or 1) < 1)
-        p.drawImage(r, img)
+        turn = ws.pending_rotation(ws.active_strip)
+        small = ws.preview_image(ws.active_strip) if turn else None
+        if small is not None:   # its angle is being changed: the last exact picture, turned by the difference
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            p.setClipRect(r)
+            p.translate(r.x(), r.y())
+            p.scale(r.width() / max(w, 1), r.height() / max(h, 1))
+            self._draw_turned(p, small, w, h, turn, ws.figure_fill(ws.active_strip))
+        else:
+            p.drawImage(r, img)
         p.restore()
 
     def _lane_lines(self, p: QPainter, dashed: bool):
@@ -238,6 +273,10 @@ class Canvas(QWidget):
         k = ws.active_strip
         q = ws.shown_stack.piece(k) if (k is not None and ws.shown_stack) else None
         w, h = ws.active_size
+        if ws.project.is_side_by_side:   # this gel's own lanes, in its own pixels
+            for d in ws.project.lanes_of(k).dividers:
+                self._line(p, self.to_view(d.x_top, 0), self.to_view(d.x_bottom, h), QColor(89, 204, 255, 160 if dashed else 115), 1, dash=dashed)
+            return
         for d in ws.project.lanes.dividers:
             if q is not None:
                 x = q.scale * d.x_at(ws.crop.y0, float(ws.image_h)) + q.shift
@@ -280,6 +319,13 @@ class Canvas(QWidget):
     def _lane_span(self, k: int) -> tuple[float, float]:
         """The ladder lane's columns in gel k's own pixels: the lane geometry through the alignment."""
         ws = self.ws
+        if ws.project.is_side_by_side:   # its own lanes, in its own pixels
+            used = ws.active_strip_rect or ws.crop
+            ll = ws.project.ladder_lane_x(k, ws.project.ladder.lane if ws.project.ladder else 1)
+            if ll is None:
+                return used.x0, used.x0 + used.width * 0.12
+            half = ll[1] / 0.85 / 2
+            return ll[0] - half, ll[0] + half
         q = ws.shown_stack.piece(k) if ws.shown_stack else None
         lad, g = ws.project.ladder, ws.geometry
         if q is None or lad is None or g is None or not 1 <= lad.lane <= g.count:
@@ -304,7 +350,10 @@ class Canvas(QWidget):
             p.setPen(QPen(QColor(255, 255, 255, 220), 1.5))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRect(self.rect_view(c.x0, c.y0, c.width, c.height))
-        self._lane_lines(p, dashed=True)
+        if pr.is_side_by_side:   # this gel's own lanes, in its own pixels (the Lane tool edits them)
+            self._draw_gel_lanes(p)
+        else:
+            self._lane_lines(p, dashed=True)
         sel, tool = ws.selection, ws.tool
         lad = pr.ladder
         if lad is not None:
@@ -354,6 +403,72 @@ class Canvas(QWidget):
             self._line(p, QPointF(self.to_view(x0, 0).x(), vy), QPointF(self.to_view(x1, 0).x(), vy), QColor(255, 209, 26, 191), 1.25, dash=True)
         else:
             self._line(p, QPointF(full.left(), vy), QPointF(full.right(), vy), QColor(255, 102, 140, 140), 1, dash=True)
+
+    def _draw_gel_lanes(self, p: QPainter):
+        """Side by side, on a gel's own view: its dividers, and the lane numbers across all the gels."""
+        ws = self.ws
+        k = ws.active_strip
+        w, h = ws.active_size
+        used = ws.active_strip_rect or ws.crop
+        rows = ws.lane_rows
+        editing = ws.tool == "lanes"
+        p.save()
+        p.setClipRect(self.rect_view(0, 0, w, h))
+        for i, d in enumerate(ws.lane_set.dividers):
+            sel = ws.selection == ("divider", i)
+            faded = not (editing or sel)
+            a, b = self.to_view(d.x_top, 0), self.to_view(d.x_bottom, h)
+            c = QColor(LANE)
+            c.setAlphaF(0.5 if faded else 0.95)
+            self._line(p, a, b, QColor(0, 0, 0, 51 if faded else 90), 4 if sel else 3)
+            self._line(p, a, b, c, 2 if sel else 1.25)
+            if editing or sel:
+                dy = min(max(d.dot_y, used.y0), used.y1)
+                self._circle(p, self.to_view(d.x_at(dy, float(h)), dy), 6 if sel else 5, c, QColor(255, 255, 255), 1.5)
+                self._handle(p, self.to_view(d.x_at(rows[0], float(h)), rows[0]), c)
+                self._handle(p, self.to_view(d.x_at(rows[1], float(h)), rows[1]), c)
+        g = ws.geometry
+        if editing and g is not None and g.count > 0:
+            first = ws.project.lane_numbers(k).start
+            top = self.rect_view(0, 0, w, h).top()
+            for n in range(1, g.count + 1):
+                self._badge(p, str(first + n - 1), QPointF(self.to_view(g.center(n, used.y0), 0).x(), top + 14), LANE, QColor(0, 0, 0))
+        p.restore()
+
+    def _draw_side_dividers(self, p: QPainter, l: FigureLayout, stack, gel: QRectF):
+        """Side by side: every gel's own dividers where that gel sits in the figure, and the lane numbers the labels use
+        (numbered from the left across all the gels)."""
+        pr = self.ws.project
+        for q in stack.pieces:
+            lanes = pr.lanes_of(q.strip)
+            h = float(q.height)
+            for d in lanes.dividers:
+                top = self.px_view(q.to_figure(d.x_at(q.source_top, h), 0)[0], q.top)
+                bot = self.px_view(q.to_figure(d.x_at(q.source_bottom, h), 0)[0], q.bottom)
+                self._line(p, top, bot, QColor(0, 0, 0, 38), 3)
+                c = QColor(LANE)
+                c.setAlphaF(0.6)
+                self._line(p, top, bot, c, 1.25)
+            first = pr.lane_numbers(q.strip).start
+            for i, c in enumerate(lanes.centers):
+                if q.source_left <= c <= q.source_right:
+                    at = self.px_view(q.to_figure(c, 0)[0], q.top)
+                    col = QColor(LANE)
+                    col.setAlphaF(0.85)
+                    self._badge(p, str(first + i), QPointF(at.x(), gel.top() + 14), col, QColor(0, 0, 0))
+
+    def side_tick_columns(self, b, lad, fy: float) -> Optional[tuple[float, float]]:
+        """Side by side: the columns a tick of its gel is drawn across, in view points (its ladder lane in the figure)."""
+        ws = self.ws
+        q = ws.shown_stack.piece(b.strip) if ws.shown_stack else None
+        if q is None:
+            return None
+        a, z = q.left, q.left + (q.right - q.left) * 0.12
+        ll = ws.project.ladder_lane_x(b.strip, lad.lane)
+        if ll is not None:
+            half = ll[1] / 0.85 / 2
+            a, z = q.to_figure(ll[0] - half, 0)[0], q.to_figure(ll[0] + half, 0)[0]
+        return self.px_view(a, fy).x(), self.px_view(z, fy).x()
 
     def hit_tick_gel(self, pt: QPointF) -> Optional[int]:
         """The tick of the gel on view that view point pt is on (the ladder lane, a little wider)."""
@@ -433,10 +548,16 @@ class Canvas(QWidget):
                 a, b = self.px_view(0, q.top).y(), self.px_view(0, q.bottom).y()
                 p.setPen(QPen(ACCENT, 2))
                 p.setBrush(Qt.BrushStyle.NoBrush)
-                p.drawRoundedRect(QRectF(gel.left() - 3, a - 3, gel.width() + 6, b - a + 6), 3, 3)
+                if stack.side_by_side:   # what it keeps of the figure
+                    l0, r0 = self.px_view(q.left, 0).x(), self.px_view(q.right, 0).x()
+                    p.drawRoundedRect(QRectF(l0 - 3, a - 3, r0 - l0 + 6, b - a + 6), 3, 3)
+                else:
+                    p.drawRoundedRect(QRectF(gel.left() - 3, a - 3, gel.width() + 6, b - a + 6), 3, 3)
         # lane dividers: in the gel with the lanes as placed; through the other gels straight down from the top of
         # the crop, where their lanes were lined up
-        for i, d in enumerate(pr.lanes.dividers):
+        if stack is not None and stack.side_by_side:
+            self._draw_side_dividers(p, l, stack, gel)
+        for i, d in enumerate([] if (stack is not None and stack.side_by_side) else pr.lanes.dividers):
             top = self.px_view(d.x_at(crop.y0, H), crop.y0)
             bot = self.px_view(d.x_at(crop.y1, H), crop.y1)
             s = sel == ("divider", i)
@@ -460,10 +581,11 @@ class Canvas(QWidget):
                 self._handle(p, top, c)
                 self._handle(p, bot, c)
         g = ws.geometry
-        if tool == "lanes" and g and g.count > 0:
+        if tool == "lanes" and g and g.count > 0 and not (stack is not None and stack.side_by_side):
+            first = pr.lane_numbers(None).start   # the gel with the lanes on its own, side by side: numbered across all the gels
             for n in range(1, g.count + 1):
                 c = self.px_view(g.center(n, crop.y0), crop.y0)
-                self._badge(p, str(n), QPointF(c.x(), gel.top() + 14), LANE, QColor(0, 0, 0))
+                self._badge(p, str(first + n - 1), QPointF(c.x(), gel.top() + 14), LANE, QColor(0, 0, 0))
         # ladder ticks
         lad = pr.ladder
         if lad and tool in ("ladder", "select"):
@@ -474,7 +596,11 @@ class Canvas(QWidget):
                 ry = b.y if b.strip is None else crop.y0   # another gel's lanes run straight down from the crop's top
                 y = self.px_view(0, fy).y()
                 x0, x1 = gel.left(), gel.left() + gel.width() * 0.12
-                if g and 1 <= lad.lane <= g.count:
+                if stack is not None and stack.side_by_side:
+                    cols = self.side_tick_columns(b, lad, fy)
+                    if cols is not None:
+                        x0, x1 = cols
+                elif g and 1 <= lad.lane <= g.count:
                     x0 = self.px_view(g.x(g.boundaries[lad.lane - 1], ry), fy).x()
                     x1 = self.px_view(g.x(g.boundaries[lad.lane], ry), fy).x()
                 s = sel == ("tick", i)
@@ -539,7 +665,7 @@ class Canvas(QWidget):
             vy = self.px_view(0, fy).y()
             ry = y if strip is None else crop.y0
             x0, x1 = h.x() - 40, h.x() + 40
-            lane = g.lane_at(px[0], ry) if g else None
+            lane = g.lane_at(px[0], ry) if (g and not (stack is not None and stack.side_by_side)) else None
             if lane:
                 x0 = self.px_view(g.x(g.boundaries[lane - 1], ry), fy).x()
                 x1 = self.px_view(g.x(g.boundaries[lane], ry), fy).x()
@@ -617,7 +743,11 @@ class Canvas(QWidget):
         fy = ws.figure_y(b.strip, b.y)
         fy = b.y if fy is None else fy
         ry = b.y if b.strip is None else ws.crop.y0
-        if g and 1 <= lad.lane <= g.count:
+        if ws.shown_stack is not None and ws.shown_stack.side_by_side:
+            cols = self.side_tick_columns(b, lad, fy)
+            if cols is not None:
+                x = cols[1] if inward else cols[0]
+        elif g and 1 <= lad.lane <= g.count:
             edge = g.boundaries[lad.lane if inward else lad.lane - 1]
             x = self.px_view(g.x(edge, ry), fy).x()
         x += 34 if inward else -34
@@ -629,6 +759,8 @@ class Canvas(QWidget):
         ws = self.ws
         if ws.shown_layout is None:
             return None
+        if ws.shown_stack is not None and ws.shown_stack.side_by_side:
+            return None   # side by side the dividers are edited in each gel's own view
         crop, H = ws.crop, float(ws.image_h)
         best = None
         for i, d in enumerate(ws.project.lanes.dividers):
@@ -641,6 +773,26 @@ class Canvas(QWidget):
                 if dist < 8 and (best is None or dist < best[2]):
                     best = (i, part, dist)
             dist = _seg_dist(pt, top, bot)
+            if dist < 5 and (best is None or dist + 2 < best[2]):
+                best = (i, "move", dist + 2)
+        return (best[0], best[1]) if best else None
+
+    def hit_strip_divider(self, pt: QPointF):
+        """A divider of the gel on view, side by side: its dot or an end (at the rows the figure keeps), or anywhere along it."""
+        ws = self.ws
+        rows = ws.lane_rows
+        H = float(ws.lane_gel_size[1])
+        best = None
+        for i, d in enumerate(ws.lane_set.dividers):
+            top = self.to_view(d.x_at(rows[0], H), rows[0])
+            bot = self.to_view(d.x_at(rows[1], H), rows[1])
+            dy = min(max(d.dot_y, rows[0]), rows[1])
+            dot = self.to_view(d.x_at(dy, H), dy)
+            for q, part in ((top, "top"), (bot, "bottom"), (dot, "move")):
+                dist = math.hypot(q.x() - pt.x(), q.y() - pt.y())
+                if dist < 8 and (best is None or dist < best[2]):
+                    best = (i, part, dist)
+            dist = _seg_dist(pt, self.to_view(d.x_top, 0), self.to_view(d.x_bottom, H))
             if dist < 5 and (best is None or dist + 2 < best[2]):
                 best = (i, "move", dist + 2)
         return (best[0], best[1]) if best else None
@@ -662,7 +814,11 @@ class Canvas(QWidget):
             ry = b.y if b.strip is None else crop.y0
             y = self.px_view(0, fy).y()
             x0, x1 = gel.left() - 50, gel.left() + gel.width() * 0.15
-            if g and 1 <= lad.lane <= g.count:
+            if stack is not None and stack.side_by_side:
+                cols = self.side_tick_columns(b, lad, fy)
+                if cols is not None:
+                    x0, x1 = min(gel.left() - 50, cols[0] - 6), cols[1] + 30
+            elif g and 1 <= lad.lane <= g.count:
                 x0 = min(gel.left() - 50, self.px_view(g.x(g.boundaries[lad.lane - 1], ry), fy).x())
                 x1 = self.px_view(g.x(g.boundaries[lad.lane], ry), fy).x() + 30
                 if lad.side == "right":
@@ -736,12 +892,14 @@ class Canvas(QWidget):
         in_gel = gel.adjusted(-2, -2, 2, 2).contains(pt)
         alt = bool(e.modifiers() & Qt.KeyboardModifier.AltModifier)
         tool = ws.tool
+        if tool == "lanes" and ws.lanes_tool_off:   # (a project opened side by side with the lane tool still on)
+            tool = "select"
         stack = ws.shown_stack
         # with several gels, the gel whose rows a click is in; only the Select tool chooses it (the other tools act on it, a
         # tick or a name belongs to it, and never change the chosen gel)
         under = None
         if stack is not None and stack.has_strips and gel.top() <= pt.y() <= gel.bottom():
-            under = stack.piece_at_figure_y(px[1])
+            under = stack.piece_at_figure_x(px[0], px[1])
         if tool == "lanes":
             hit = self.hit_divider(pt)
             if hit is not None:
@@ -811,10 +969,12 @@ class Canvas(QWidget):
             elif self._edit_label(pt):
                 pass
             elif in_gel and under is not None:
-                # a click chooses the gel under it; dragging moves it sideways, to line its lanes up under the dividers
+                # a click chooses the gel under it; dragging moves it sideways, to line its lanes up under the dividers (side by
+                # side, up and down against the gel with the lanes, which stays put)
                 ws.choose_gel(under.strip)
                 ws.selection = None
-                self.drag = self._strip_drag(under, pt, px)
+                if not stack.side_by_side or under.strip is not None:
+                    self.drag = self._strip_drag(under, pt, px)
             else:
                 ws.selection = None
         self.update()
@@ -826,7 +986,11 @@ class Canvas(QWidget):
         k = q.strip
         s0 = ws.project.effective_main_shift if k is None else ws.project.strips[k - 1].shift
         per_px = 1 / (self.scale() * ws.shown_layout.pt_per_px)
-        return ("strip", k, s0, pt, per_px, q.to_piece(px[0], 0)[0])
+        if q.side_by_side:   # the view's scale holds while the gel is held; it fits the new figure afterwards
+            fitting = self.zoom is None
+            self.zoom = self.scale()
+            return ("strip", k, s0, pt, per_px, 0.0, fitting)
+        return ("strip", k, s0, pt, per_px, q.to_piece(px[0], 0)[0], False)
 
     def _press_gel_view(self, pt: QPointF, e: QMouseEvent):
         """A click on the stacked gel on view (Ladder Ticks, Band Names and Select): its ticks and names are on its own pixels."""
@@ -841,6 +1005,28 @@ class Canvas(QWidget):
             self.update()
             return
         in_gel = self.rect_view(0, 0, *ws.active_size).adjusted(-2, -2, 2, 2).contains(pt)
+        if ws.tool == "lanes" and ws.project.is_side_by_side:   # this gel's own dividers: click between lanes, drag, Alt-click to delete
+            rows = ws.lane_rows
+            hit = self.hit_strip_divider(pt)
+            if hit is not None:
+                i, part = hit
+                if alt:
+                    ws.delete_divider(i)
+                else:
+                    ws.selection = ("divider", i)
+                    d = ws.lane_set.dividers[i]
+                    self.drag = ("divider", i, part, type(d)(d.x_top, d.x_bottom, d.dot_y), (gx, gy))
+            elif in_gel:
+                ws.add_divider(float(sround(gx)), float(sround(min(max(gy, rows[0]), rows[1]))))
+                xs = [dd.x_top + dd.x_bottom for dd in ws.lane_set.dividers]
+                i = min(range(len(xs)), key=lambda n: abs(xs[n] / 2 - sround(gx)))
+                ws.selection = ("divider", i)
+                d = ws.lane_set.dividers[i]
+                self.drag = ("divider", i, "move", type(d)(d.x_top, d.x_bottom, d.dot_y), (gx, gy))
+            else:
+                ws.selection = None
+            self.update()
+            return
         i = self.hit_tick_gel(pt)
         j = self.hit_name_gel(pt) if i is None else None
         if i is not None:
@@ -870,7 +1056,8 @@ class Canvas(QWidget):
         if e.button() == Qt.MouseButton.LeftButton and ws.tool == "select" and not self.full_view and ws.shown_layout is not None:
             stack = ws.shown_stack
             if stack is not None and stack.has_strips and self.gel_view().adjusted(-2, -2, 2, 2).contains(pt):
-                q = stack.piece_at_figure_y(self.view_px(pt)[1])
+                vp = self.view_px(pt)
+                q = stack.piece_at_figure_x(vp[0], vp[1])
                 if q is not None:
                     self.drag = self.press = None
                     ws.show_gel(q.strip)
@@ -922,9 +1109,10 @@ class Canvas(QWidget):
             self.pan = self.clamped(QPointF(sp.x() + pt.x() - start.x(), sp.y() + pt.y() - start.y()), self.scale())
         elif d[0] == "divider":
             _, i, part, start, spx = d
-            px = self.view_px(pt)
+            px = self.to_model(pt) if ws.views_other_gel else self.view_px(pt)   # a gel on its own is in its own pixels
             if part == "move":
-                dot = min(max(px[1], ws.crop.y0), ws.crop.y1)
+                rows = ws.lane_rows
+                dot = min(max(px[1], rows[0]), rows[1])
                 ws.drag_divider(i, start, "move", float(sround(px[0] - spx[0])), float(sround(dot)))
             else:
                 ws.drag_divider(i, start, part, float(sround(px[0])))
@@ -954,7 +1142,11 @@ class Canvas(QWidget):
             x = ops.lane_x(ws.project, 1 if a is not None and a.side == "left" else n, k) if n else None
             ws.move_name(d[1], ws.snap_in_gel(k, self.to_model(pt)[0] if x is None else x, self.to_model(pt)[1], alt))
         elif d[0] == "strip":
-            _, k, s0, start, per_px, column = d
+            _, k, s0, start, per_px, column, _fitting = d
+            if ws.project.is_side_by_side:   # vertical: the gel follows the pointer up and down
+                ws.live_strip_shift(k, s0 - ws.strip_scale(k) * (pt.y() - start.y()) * per_px)
+                self.update()
+                return
             ws.live_strip_shift(k, s0 - ws.strip_scale(k) * (pt.x() - start.x()) * per_px)
             # the figure may have moved on the page (it starts at the leftmost column any gel keeps, and the gel with the lanes
             # holds still while the others move): slide the view so the gel's column is under the pointer again, which also
@@ -990,6 +1182,8 @@ class Canvas(QWidget):
                 ws.end_gesture("Move Band Name")
             elif kind == "strip":
                 ws.end_gesture("Line Up Gel")
+                if d[6]:   # it was fitting before the drag: it fits the new figure
+                    self.fit()
             elif kind == "level":
                 ws.straighten(d[1], d[2])
             elif kind == "unit":
@@ -1058,13 +1252,19 @@ class Canvas(QWidget):
         if k in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and ws.tool in FULL_IMAGE_TOOLS:
             ws.set_tool("select")
             return
-        if k in (Qt.Key.Key_Left, Qt.Key.Key_Right) and ws.selection is None and ws.project.strips \
-                and ws.tool not in FULL_IMAGE_TOOLS:
+        if k in (Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down) and ws.selection is None \
+                and ws.project.strips and ws.tool not in FULL_IMAGE_TOOLS:
             # nothing selected and several gels: left and right move the chosen gel, the one with the lanes too (its dividers,
-            # labels, ticks and names go with it), a pixel at a time (Shift: ten)
+            # labels, ticks and names go with it), a pixel at a time (Shift: ten); side by side, up and down move the chosen
+            # gel against the gel with the lanes
             step = 10 if e.modifiers() & Qt.KeyboardModifier.ShiftModifier else 1
-            ws.nudge_active_gel(-step if k == Qt.Key.Key_Left else step)
-            return
+            if ws.project.is_side_by_side:
+                if k in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+                    ws.nudge_active_gel_rows(-step if k == Qt.Key.Key_Up else step)
+                    return
+            elif k in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+                ws.nudge_active_gel(-step if k == Qt.Key.Key_Left else step)
+                return
         if k in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and ws.selection:
             kind, i = ws.selection
             if kind == "divider":
@@ -1093,7 +1293,10 @@ class Canvas(QWidget):
             return
         if ws.views_other_gel:   # a stacked gel on its own
             h = self.hover
-            if h is not None and (self.hit_tick_gel(h) is not None or self.hit_name_gel(h) is not None):
+            if ws.tool == "lanes" and ws.project.is_side_by_side:
+                hit = self.hit_strip_divider(h) if h is not None else None
+                self.setCursor(Qt.CursorShape.SizeHorCursor if hit and hit[1] == "move" else Qt.CursorShape.CrossCursor)
+            elif h is not None and (self.hit_tick_gel(h) is not None or self.hit_name_gel(h) is not None):
                 self.setCursor(Qt.CursorShape.SizeVerCursor)
             else:
                 self.setCursor(Qt.CursorShape.CrossCursor if ws.tool in ("ladder", "names") else Qt.CursorShape.ArrowCursor)

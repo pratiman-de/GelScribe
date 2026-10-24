@@ -242,6 +242,20 @@ names in exported files" in the Export tab; the fingerprints stay either way.
 
 ![The Export tab](images/gels-12-export.png)
 
+## Side by side
+
+Gels can also sit next to each other instead of one above the other, which suits separately run gels such as
+radioactive gels scanned on a phosphor screen. In the Gels section, set Arrangement to Side by side. Gel 1 is then on
+the left, and every gel has its own lanes: choose a gel in the switcher above the canvas and place its lane dividers
+there. The lanes are numbered across the whole figure from the left, and one row of lane labels covers all of them.
+
+Each gel is resized to the height of the gel with the lanes, keeping its proportions, with the tops lined up. Place
+ladder ticks with the same sizes on both gels and click Auto-align, and GelScribe lines them up by those bands instead.
+The note under it says which it did. Shift moves a gel up or down, Stretch resizes it, and you can drag it with the
+Select tool. A gel that keeps its original pixels can only be moved, not resized. Switching the arrangement back and
+forth keeps each gel's lanes, ticks and names. On the command line it's `--arrangement side-by-side`, and `--gel N`
+with `--dividers` or `--auto-lanes` sets that gel's lanes.
+
 ## Starting with several images
 
 Dropping several images on an empty window, or choosing several with Choose Image…, opens the first and stacks the

@@ -17,12 +17,14 @@ public struct ExportInfo: Sendable {
     /// (whole pixels, inside the image), without them the stored numbers. `convertedTo`: how the output is stored when some
     /// gels keep their original pixels and others don't ("16-bit gray"): the others are converted into it. With none keeping
     /// them, the stack is stored as 8-bit gray or RGB (`StripStack.outputIsGray`), and the note says so the same way.
+    /// `colorGels`: how each colour gel was stored by gel number (0 = the gel with the lanes, k = strip k; `StripStack.colorGels`):
+    /// an adjusted colour gel is stored as 8-bit RGB and the note says "converted to 8-bit RGB" unless it was that already.
     /// The note starts with a warning line for each gel whose image no longer matches its fingerprint
     /// (`changedImageWarnings`), and leaves out every gel's file name when the project's `exportFileNames` is off.
     public static func `for`(_ p: GelProject, sourceSHA256: String?, resampledDPI: Double? = nil, nativeDPI: Double? = nil,
                              scale: ValueScale? = nil, strips: [(sha256: String?, scale: ValueScale?)] = [],
                              size: (width: Int, height: Int)? = nil, stripSizes: [(width: Int, height: Int)?] = [],
-                             convertedTo: String? = nil) -> ExportInfo {
+                             convertedTo: String? = nil, colorGels: [Int: String] = [:]) -> ExportInfo {
         let cropText: String
         if let crop = p.crop {
             let r = size.map { p.effectiveCrop(width: $0.width, height: $0.height) } ?? crop
@@ -35,7 +37,8 @@ public struct ExportInfo: Sendable {
             let r = p.display.range(in: s)
             return "display range \(s.format(r.min))–\(s.format(r.max)) of \(s.format(s.maxValue))"
         } ?? "levels \(p.display.black)–\(p.display.white)"
-        let adjusted = "rotation \(p.rotateDeg)°, \(levels), gamma \(p.display.gamma)\(p.display.invert ? ", inverted" : "")"
+        var adjusted = "rotation \(p.rotateDeg)°, \(levels), gamma \(p.display.gamma)\(p.display.invert ? ", inverted" : "")"
+        if p.strips.isEmpty, let stored = colorGels[0], stored != "8-bit RGB" { adjusted += ", converted to 8-bit RGB" }
         let names = p.exportFileNames
         // Some gels keep their original pixels and some don't: the lanes gel's setting alone says nothing about the others, so the
         // headline says "mixed" and each gel below says its own
@@ -58,20 +61,27 @@ public struct ExportInfo: Sendable {
         var pieces = ""
         let mainSize = size   // the gel with the lanes' working size, when known (a strip's own size is called `size` below)
         if !p.strips.isEmpty {
-            pieces = " \(p.strips.count + 1) separately scanned gels, top to bottom, with a \(p.separatorColor.name) line between each:"
+            pieces = " \(p.strips.count + 1) separately scanned gels, \(p.isSideBySide ? "left to right" : "top to bottom"), with a \(p.separatorColor.name) line between each:"
             // what converting into the output's storage did: 8-bit values times 257 for 16-bit
             let conversion = convertedTo.map { "converted to \($0)" + ($0.hasPrefix("16-bit") ? " (values times 257)" : "") }
+            /// A colour gel that is 8-bit RGB already is not converted when the stack is 8-bit RGB.
+            /// A gray gel that keeps its pixels in an RGB output goes in with its values copied to each channel.
+            func copied(_ gel: Int) -> Bool { convertedTo?.hasSuffix("RGB") == true && colorGels[gel] == nil && p.isStrict(gel: gel == 0 ? nil : gel) }
+            func conversionNote(for gel: Int) -> String? {
+                convertedTo == "8-bit RGB" && colorGels[gel] == "8-bit RGB" ? nil : conversion
+            }
             for (n, k) in p.stackOrder.enumerated() {
                 guard let k else {
-                    var main = "as above (its lanes are the figure's)"
+                    var main = p.isSideBySide ? "the reference for vertical placement" : "as above (its lanes are the figure's)"
+                    if mixed && p.strict && copied(0) { main += ", original values, copied to all three channels" }
                     if mixed && p.turn != 0 { main += ", turned \(p.turn * 90)°" }   // the headline that said so is the mixed one now
                     if mixed && !p.strict { main += ", \(adjusted)" }   // and so is the one that said what was done to this gel's pixels
                     if let size {   // the kept rectangle, as the figure took it
                         let r = p.effectiveCrop(width: size.width, height: size.height)
                         main += ", columns \(r.x0.safeInt)–\(r.x1.safeInt), rows \(r.y0.safeInt)–\(r.y1.safeInt)"
                     }
-                    if p.effectiveMainShift != 0 { main += ", shifted \(FigureLayoutEngine.formatSize(p.effectiveMainShift)) px" }
-                    if !p.strict, let conversion { main += ", \(conversion)" }
+                    if p.effectiveMainShift != 0, !p.isSideBySide { main += ", shifted \(FigureLayoutEngine.formatSize(p.effectiveMainShift)) px" }
+                    if !p.strict, let conversion = conversionNote(for: 0) { main += ", \(conversion)" }
                     pieces += " \(n + 1). " + (names ? "\(p.image), " : "") + "\(main);"
                     continue
                 }
@@ -80,6 +90,7 @@ public struct ExportInfo: Sendable {
                 let keeps = p.isStrict(gel: k)
                 var parts: [String] = []
                 if keeps { parts.append("original pixels") }
+                if keeps && copied(k) { parts.append("original values, copied to all three channels") }
                 if s.turn != 0 { parts.append("turned \(s.turn * 90)°") }
                 if !keeps && s.rotateDeg != 0 { parts.append("rotation \(s.rotateDeg)°") }
                 if let size = i < stripSizes.count ? stripSizes[i] : nil, let main = mainSize {
@@ -92,8 +103,12 @@ public struct ExportInfo: Sendable {
                     parts.append("columns \(s.left.map { String($0.rounded().safeInt) } ?? "crop")–\(s.right.map { String($0.rounded().safeInt) } ?? "crop"), " +
                                  "rows \((s.top ?? 0).rounded().safeInt)–\(s.bottom.map { String($0.rounded().safeInt) } ?? "end")")
                 }
-                parts.append("shifted \(FigureLayoutEngine.formatSize(a.shift)) px")
-                if a.scale != 1 { parts.append("stretched (scaled \(String(format: "%.4f", a.scale))×)") }
+                let way = p.isSideBySide ? " vertically" : ""
+                parts.append("shifted \(FigureLayoutEngine.formatSize(a.shift)) px\(way)")
+                if a.scale != 1 {
+                    parts.append(p.isSideBySide ? "sized \(String(format: "%.4f", a.scale))× in both directions (resampled)"
+                                 : "stretched (scaled \(String(format: "%.4f", a.scale))×)")
+                }
                 if !keeps {   // brightness & contrast only reach the pixels of a gel that doesn't keep its original ones
                     if let sc = i < strips.count ? strips[i].scale : nil {
                         let r = s.display.range(in: sc)
@@ -101,7 +116,7 @@ public struct ExportInfo: Sendable {
                     }
                     if s.display.gamma != 1 { parts.append("gamma \(s.display.gamma)") }
                     if s.display.invert { parts.append("inverted") }
-                    if let conversion { parts.append(conversion) }
+                    if let conversion = conversionNote(for: k) { parts.append(conversion) }
                 }
                 var head = names ? s.image : ""   // "other.png sha256 …": the file name and fingerprint, whichever there are
                 if let sha = i < strips.count ? strips[i].sha256 : nil { head += (head.isEmpty ? "" : " ") + "sha256 \(sha)" }

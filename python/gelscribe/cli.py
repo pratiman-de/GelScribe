@@ -29,7 +29,11 @@ USAGE = """\
 usage:
   gelscribe new IMAGE [-o OUT.gelscribe]      make a project around an image (original copied byte-for-byte)
   gelscribe render PROJECT [-o STEM] [--formats pdf,png,tiff,svg] [--dpi N|native]   (other than native resamples the gel)
-  gelscribe edit PROJECT [--dividers X,X,…] [--auto-lanes N] [--labels "µM: ladder|0{L|P}|50{L|P}|…"]
+  gelscribe edit PROJECT [--arrangement top-to-bottom|side-by-side]   how the gels sit: stacked (the default) or left to right
+                                      in stack order, each gel with its own lanes (--gel N --dividers / --auto-lanes set gel N's),
+                                      lanes numbered across the figure; --align auto, --shift and --scale then act vertically.
+                                      Changing it starts each gel's shift and scale over (0 and 1): line the gels up again
+                [--dividers X,X,…] [--auto-lanes N] [--labels "µM: ladder|0{L|P}|50{L|P}|…"]
                 [--row-name µM] [--preset ID] [--system GEL] [--ticks Y,Y,…] [--no-snap] [--name TEXT@Y[:arrow|tick|none]]…
                 [--title T] [--crop X0,Y0,X1,Y1|fit]   with --gel N: that gel's own crop (columns and rows in its own pixels)
                 [--strict on|off]   keep original pixels: for the gel with the lanes, or for gel N with --gel N (each gel has its own;
@@ -48,7 +52,10 @@ usage:
                                       ticks and names go with it, and no other gel moves); with --gel N, where gel N sits
                 [--gel N [--rows Y0,Y1] [--scale S] [--align auto]]   gel N, counted from the top: its rows, and lining
                                       its lanes up wherever the gel with the lanes sits; --crop, --shift, --ticks, --name, --rotate,
-                                      --turn and --strict then apply to it
+                                      --turn and --strict then apply to it. Side by side, --scale sizes the gel (one size both ways,
+                                      0.01 to 100) and --align auto sizes it by the ladder bands both gels have, else to the same
+                                      height as the gel with the lanes (a gel that keeps its original pixels is only lined up by the tops);
+                                      gels are sized like that when added side by side and when this arrangement is chosen
                 [--own-ladder on|off]   the gel's ladder sizes start again from the top of the list instead of carrying
                                       on from the gel above (the gel with the lanes, or gel N with --gel N)
                 [--file-names on|off]   whether exported files carry each gel's file name (off: the SHA-256 fingerprints stay)
@@ -317,6 +324,7 @@ def no_such_system(preset, key: str) -> CommandError:
 
 
 def cmd_edit(a: Args) -> int:
+    arrangement_text = a.option("--arrangement")
     dividers = a.option("--dividers")
     auto_lanes = a.option("--auto-lanes")
     labels = a.option("--labels")
@@ -354,7 +362,7 @@ def cmd_edit(a: Args) -> int:
 
     from .core import detect, ladders, ops, strips as stacked
     from .core.image import ImageError, SourceImage, WorkingImage
-    from .core.model import GelProject, Ladder, PixelRect, Sane, format_size, parse_separator, sround
+    from .core.model import SIDE_SCALES, GelProject, Ladder, PixelRect, Sane, format_size, parse_separator, sround
     from .core.package import is_gelscribe_folder, names_in
     from .core.scheme import LabelScheme
 
@@ -440,9 +448,14 @@ def cmd_edit(a: Args) -> int:
             raise CommandError("--shift wants pixels")
     stretch = None
     if scale_text is not None:
-        stretch = number(scale_text, "--scale wants a number from 0.5 to 2, e.g. 1.02")
-        if not 0.5 <= stretch <= 2:
-            raise CommandError("--scale wants a number from 0.5 to 2, e.g. 1.02")
+        stretch = number(scale_text, "--scale wants a number from 0.5 to 2, e.g. 1.02 (side by side 0.01 to 100)")
+        if not SIDE_SCALES[0] <= stretch <= SIDE_SCALES[1]:
+            raise CommandError("--scale wants a number from 0.5 to 2, e.g. 1.02 (side by side 0.01 to 100)")
+    arrangement = None
+    if arrangement_text is not None:
+        arrangement = {"top-to-bottom": "top_to_bottom", "side-by-side": "side_by_side"}.get(arrangement_text.lower())
+        if arrangement is None:
+            raise CommandError("--arrangement wants top-to-bottom or side-by-side")
     if align is not None:
         if align.lower() != "auto":
             raise CommandError("--align wants auto")
@@ -466,6 +479,9 @@ def cmd_edit(a: Args) -> int:
         except ImageError as e:
             raise CommandError(f"{f}: {e}") from None
         taken.append(p.strips[-1].image)
+
+    if arrangement is not None:
+        ops.set_arrangement(p, arrangement)
 
     def gel(n: int):
         """Gel n, counted from the top, as its number in strips; None = the gel with the lanes."""
@@ -544,6 +560,15 @@ def cmd_edit(a: Args) -> int:
         ops.turn(p, strip, quarter, *gel_size(strip))
     if strip is None and quarter:
         ops.turn(p, None, quarter, *main_size())
+    # side by side, gels arrive sized and placed: all of them when the arrangement was just chosen, else the ones just added
+    # (--shift, --scale and --align below still have the last word)
+    if p.is_side_by_side and (arrangement is not None or new_gels):
+        added = {f.name for f in new_gels}
+        mc = p.effective_crop(*main_size())
+        for k in range(1, len(p.strips) + 1):
+            if arrangement is not None or p.strips[k - 1].image in added:
+                note = ops.align_vertically(p, k, (mc.y0, mc.y1), gel_size(k)[1]) or ""
+                say(f"gel {p.position_of(k) + 1}: {note}")
     w0, h0 = main_size()
     sizes = [strip_size(k + 1) for k in range(len(p.strips))]
     p.normalize((w0, h0), sizes)   # rows that can't be used mean the whole gel; marks outside their gel move inside it
@@ -575,7 +600,12 @@ def cmd_edit(a: Args) -> int:
         if shift is not None:
             s.shift = shift   # its place in the figure
         if stretch is not None:
+            if not p.is_side_by_side and not 0.5 <= stretch <= 2:
+                raise CommandError("--scale wants a number from 0.5 to 2, e.g. 1.02")
             s.scale = stretch
+    if shift is not None and strip is None and p.is_side_by_side:
+        raise CommandError(f"gel {gel_n if gel_n is not None else 1} has the lanes the other gels are placed against, so it stays put; "
+                           "give --shift a --gel N for another gel")
     if shift is not None and strip is None:
         p.main_shift = float(sround(shift))   # the gel with the lanes, whole pixels
     if fill is not None:
@@ -602,15 +632,16 @@ def cmd_edit(a: Args) -> int:
         if min(box[0], box[2]) >= w or min(box[1], box[3]) >= h or max(box[0], box[2]) <= 0 or max(box[1], box[3]) <= 0:
             raise CommandError(f"--crop is outside the {w}×{h} image")
         p.crop = r
+    # side by side every gel has its own lanes: --gel N says whose (in that gel's own pixels); otherwise they are the lanes gel's
+    lane_gel = strip if p.is_side_by_side else None
     if xs is not None:
-        if any(not 0 <= x <= w for x in xs):
-            raise CommandError(f"--dividers wants positions inside the image (0–{w})")
-        if xs:
-            ops.set_dividers(p, xs, w, h)
-        else:
-            p.lanes.dividers, p.lanes.centers = [], []
+        lw, lh = gel_size(lane_gel)
+        if any(not 0 <= x <= lw for x in xs):
+            raise CommandError(f"--dividers wants positions inside the image (0–{lw})")
+        ops.set_dividers(p, xs, lw, lh, lane_gel)
     elif lane_count is not None:
-        if len(ops.auto_dividers(p, work_image(), lane_count).centers) < 2:
+        work = strip_work(lane_gel) if lane_gel is not None else work_image()
+        if len(ops.auto_dividers(p, work, lane_count, lane_gel).centers) < 2:
             warn(f"couldn't find {lane_count} lanes; place them with --dividers")
     if labels is not None:
         for text in ops.apply_quick_labels(p, labels, group_row_name=row_name).warnings:
@@ -629,8 +660,13 @@ def cmd_edit(a: Args) -> int:
         if not group_rows:
             warn("there are no group labels yet, so the angle wasn't stored; type them with --labels")
     # gel N's working image, after its turn and rotation, for lining up, ticks and names
-    sw = strip_work(strip) if strip is not None and (align == "auto" or ys) else None
-    if align == "auto":
+    sw = strip_work(strip) if strip is not None and ((align == "auto" and not p.is_side_by_side) or ys) else None
+    if align == "auto" and p.is_side_by_side:   # vertical: the ladder bands both gels have, else the tops
+        mc = p.effective_crop(*main_size())
+        note = ops.align_vertically(p, strip, (mc.y0, mc.y1), gel_size(strip)[1]) or ""
+        s = p.strips[strip - 1]
+        say(f"gel {gel_n}: shift {format_size(s.shift)} px, scale {format_size(s.scale)} (vertical). {note}")
+    elif align == "auto":
         s = p.strips[strip - 1]
         keep = p.is_strict(strip)
         r, hint = stacked.align_gel(p, strip, sw)
@@ -659,10 +695,15 @@ def cmd_edit(a: Args) -> int:
     if ys:
         lane = p.ladder.lane if p.ladder else 1
         centers = p.lanes.centers
-        if snap and lane > len(centers):
+        side_lane = p.ladder_lane_x(strip, lane) if p.is_side_by_side else None
+        can_snap = snap and (side_lane is not None if p.is_side_by_side else lane <= len(centers))
+        if snap and not can_snap:
             warn("no lanes yet, so the ticks weren't snapped to bands")
         c = p.effective_crop(w, h)
-        if sw is not None:
+        if side_lane is not None:   # side by side: that gel's own ladder lane, in its own pixels
+            cx, width = side_lane
+            dark = sw.darkness(p.strips[strip - 1].display.bands_dark) if sw is not None else work_image().darkness(p.display.bands_dark)
+        elif sw is not None:
             dark = sw.darkness(p.strips[strip - 1].display.bands_dark)
             cx = ops.lane_x(p, lane, strip)
             width = (p.lanes.width if p.lanes.width > 0 else 100) * p.effective_alignment(strip)[1]
@@ -672,7 +713,7 @@ def cmd_edit(a: Args) -> int:
             width = p.lanes.width if p.lanes.width > 0 else 100
         gw, gh = gel_size(strip)
         for y in sorted(in_gel(y, "--ticks") for y in ys):   # top down, so each takes the next size from the ladder's list
-            if snap and cx is not None:
+            if can_snap and cx is not None:
                 s = detect.snap_band(dark, cx, y, width)
                 y = p.clamp_y(s, strip, gw, gh) if s is not None else y   # a snap never leaves the rows the figure shows
             size = ops.suggested_size(p, y, None, strip) if preset is None else None   # --preset sizes them all below
@@ -699,7 +740,7 @@ def cmd_edit(a: Args) -> int:
         p.crop = ops.suggest_crop(p, w, h)
     p.sync_lane_centers(w, h)
 
-    changed = any(v is not None for v in (dividers, auto_lanes, labels, row_name, preset_id, system_key, ticks, title,
+    changed = any(v is not None for v in (arrangement_text, dividers, auto_lanes, labels, row_name, preset_id, system_key, ticks, title,
                                           crop, strict, scheme_from, rotate, fill, turn_text, remove_text, order_text,
                                           rows_text, shift_text, scale_text, align, own_text, file_names_text, angle_text, separator, separator_width_text,
                                           group_angle_text)) or bool(names) or bool(add_gels)

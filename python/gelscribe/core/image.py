@@ -10,6 +10,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import io
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Optional
 
@@ -45,6 +47,15 @@ def _imagej_range(description: Optional[str]) -> Optional[tuple[float, float]]:
 
 CMYK_MESSAGE = ("This image is in CMYK, a colour format for printing, which GelScribe doesn't support. Convert it to "
                 "RGB and open that.")
+
+
+HEIC_MESSAGE = "HEIC images aren't supported in the Python version. Export the image as PNG or TIFF and open that."
+_HEIC_BRANDS = (b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"mif1", b"msf1")
+
+
+def _is_heic(data: bytes) -> bool:
+    """An ISO base media file whose major brand says HEIC/HEIF (the Mac app reads these, this version doesn't)."""
+    return len(data) >= 12 and data[4:8] == b"ftyp" and data[8:12] in _HEIC_BRANDS
 
 
 def _decode_tiff(data: bytes):
@@ -160,6 +171,8 @@ class SourceImage:
 
     def __init__(self, data: bytes):
         self.data = bytes(data)
+        if _is_heic(self.data):
+            raise ImageError(HEIC_MESSAGE)
         try:
             if self.data[:4] in (b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+"):
                 arr, inverted, rng, icc = _decode_tiff(self.data)
@@ -190,29 +203,50 @@ class SourceImage:
         self.imagej_range = rng
         self.channels = 1 if arr.ndim == 2 else 3
         self.sha256 = hashlib.sha256(self.data).hexdigest()
+        self._color: Optional[np.ndarray] = None
         self.gray = self._to_gray()
 
-    def _to_gray(self) -> np.ndarray:
-        """Float 0…1 (0 = black), what analysis and the display mapping work on."""
+    def _unit(self) -> np.ndarray:
+        """The pixels as float 0…1 (0 = black), in every channel the file has."""
         a = self.pixels.astype(np.float32)
         if self.is_float:
             lo, hi = float(np.nanmin(a)), float(np.nanmax(a))
             a = (a - lo) / (hi - lo) if hi > lo and (lo < 0 or hi > 1) else a
         else:
             a /= self.scale.max_value
+        return a
+
+    def _to_gray(self) -> np.ndarray:
+        """Float 0…1 (0 = black), what analysis and the display mapping work on."""
+        a = self._unit()
         if a.ndim == 3:
             a = a[..., 0] * 0.2126 + a[..., 1] * 0.7152 + a[..., 2] * 0.0722
         return np.clip(np.nan_to_num(a), 0, 1).astype(np.float32)
+
+    @property
+    def color(self) -> Optional[np.ndarray]:
+        """An RGB image's channels as float 0…1, (h, w, 3), what the figure's colour pixels are made from; None for gray."""
+        if self.channels != 3:
+            return None
+        if self._color is None:
+            self._color = np.clip(np.nan_to_num(self._unit()), 0, 1).astype(np.float32)
+        return self._color
 
     def turned(self, q: int) -> "SourceImage":
         """The same file q quarter turns clockwise: pixels reordered, nothing resampled, so Strict allows it."""
         q %= 4
         if q == 0:
             return self
-        t = copy.copy(self)
-        t.pixels = np.ascontiguousarray(np.rot90(self.pixels, -q, axes=(0, 1)))
-        t.gray = np.ascontiguousarray(np.rot90(self.gray, -q))
-        return t
+        memo = self.__dict__.setdefault("_turns", {})   # made once: a change of angle turns the same picture again
+        if q not in memo:
+            t = copy.copy(self)
+            t.pixels = np.ascontiguousarray(np.rot90(self.pixels, -q, axes=(0, 1)))
+            t.gray = np.ascontiguousarray(np.rot90(self.gray, -q))
+            t._color = None   # made again from the turned pixels when wanted
+            t._turns = {}
+            t.__dict__.pop("_wedges", None)
+            memo[q] = t
+        return memo[q]
 
     @property
     def width(self) -> int:
@@ -241,35 +275,95 @@ def median_4096(img: np.ndarray, include: Optional[np.ndarray] = None) -> float:
     return b / 4095
 
 
+def quantized(img: np.ndarray) -> np.ndarray:
+    """Float 0…1 as the 16-bit level every display mapping looks up (the value times 65535, truncated)."""
+    return np.clip(img * 65535, 0, 65535).astype(np.uint16)
+
+
 def percentile_65536(img: np.ndarray, q: float) -> float:
-    hist = np.bincount((img * 65535).astype(np.int64).ravel(), minlength=65536)
+    """img: float 0…1, or its 16-bit levels (quantized)."""
+    levels = img if img.dtype == np.uint16 else (img * 65535).astype(np.int64)
+    hist = np.bincount(levels.ravel(), minlength=65536)
     target = int(img.size * q / 100)
     acc = np.cumsum(hist)
     idx = np.nonzero(acc > target)[0]
     return float(idx[0]) / 65535 if idx.size else 1.0
 
 
-def rotated(img: np.ndarray, degrees: float, fill: float) -> np.ndarray:
-    """Rotates about the centre (bilinear), keeping the canvas size; uncovered corners get fill. Positive degrees
-    turn the picture counter-clockwise on screen."""
-    if abs(degrees) <= 1e-6:
-        return img
-    h, w = img.shape
+_POOL: Optional[ThreadPoolExecutor] = None
+
+
+def _bands(h: int, work, serial_below: int = 1 << 18, pixels: int = 0):
+    """work(r0, r1) over bands of rows, on every core (numpy lets go of the GIL), in order; the results as a list."""
+    global _POOL
+    n = os.cpu_count() or 1
+    if n < 2 or pixels < serial_below or h < 4:
+        return [work(0, h)]
+    if _POOL is None:
+        _POOL = ThreadPoolExecutor(max_workers=n, thread_name_prefix="gelscribe-rotate")
+    edges = np.linspace(0, h, min(n * 2, h) + 1).astype(int)
+    return [f.result() for f in [_POOL.submit(work, int(a), int(b)) for a, b in zip(edges, edges[1:])]]
+
+
+def _turn(h: int, w: int, degrees: float):
+    """The turn of rotated(): its cosine and sine, the centre, and the columns' and rows' offsets from it (float32 all)."""
     t = np.float32(np.radians(degrees))
     c, s = np.float32(np.cos(t)), np.float32(np.sin(t))
     cx, cy = np.float32((w - 1) / 2), np.float32((h - 1) / 2)
-    ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
-    dx, dy = xs - cx, ys - cy
-    sx = c * dx - s * dy + cx
-    sy = s * dx + c * dy + cy
-    x0, y0 = np.floor(sx).astype(np.int64), np.floor(sy).astype(np.int64)
-    ok = (x0 >= 0) & (y0 >= 0) & (x0 < w - 1) & (y0 < h - 1)
-    out = np.full(img.shape, fill, dtype=np.float32)
-    x0o, y0o = x0[ok], y0[ok]
-    fx, fy = sx[ok] - x0o, sy[ok] - y0o
-    top = img[y0o, x0o] * (1 - fx) + img[y0o, x0o + 1] * fx
-    bot = img[y0o + 1, x0o] * (1 - fx) + img[y0o + 1, x0o + 1] * fx
-    out[ok] = top * (1 - fy) + bot * fy
+    dx = np.arange(w, dtype=np.float32) - cx
+    dy = np.arange(h, dtype=np.float32) - cy
+    return c, s, cx, cy, dx, dy
+
+
+def _source_coords(turn, r0: int, r1: int):
+    """Where rows r0 up to r1 of the turned picture come from in the original (x and y, float32): the same arithmetic as for
+    a whole picture, row by row."""
+    c, s, cx, cy, dx, dy = turn
+    sx = (c * dx)[None, :] - (s * dy[r0:r1])[:, None] + cx
+    sy = (s * dx)[None, :] + (c * dy[r0:r1])[:, None] + cy
+    return sx, sy
+
+
+def rotation_inside(h: int, w: int, degrees: float) -> np.ndarray:
+    """Where rotated() takes its pixels from the picture (True) rather than filling: the rest is the corners it uncovers."""
+    turn = _turn(h, w, degrees)
+
+    def band(r0, r1):
+        sx, sy = _source_coords(turn, r0, r1)
+        x0, y0 = np.floor(sx).astype(np.int64), np.floor(sy).astype(np.int64)
+        return (x0 >= 0) & (y0 >= 0) & (x0 < w - 1) & (y0 < h - 1)
+    return np.concatenate(_bands(h, band, pixels=h * w))
+
+
+def rotated(img: np.ndarray, degrees: float, fill: float, levels: bool = False) -> np.ndarray:
+    """Rotates about the centre (bilinear), keeping the canvas size; uncovered corners get fill. Positive degrees
+    turn the picture counter-clockwise on screen. A colour image (h, w, 3) is turned in one pass, every channel as a gray
+    one would be (fill: one gray for all, or one for each); the rows are split over the cores. levels: the result as the 16-bit
+    levels (quantized) instead, made band by band as it goes."""
+    if abs(degrees) <= 1e-6:
+        return quantized(img) if levels else img
+    h, w = img.shape[:2]
+    turn = _turn(h, w, degrees)
+    out = np.empty(img.shape, dtype=np.uint16 if levels else np.float32)
+    flat = img.reshape(h * w, *img.shape[2:])
+    filled = np.asarray(fill, dtype=np.float32)
+
+    def band(r0, r1):
+        sx, sy = _source_coords(turn, r0, r1)
+        x0, y0 = np.floor(sx).astype(np.int64), np.floor(sy).astype(np.int64)
+        ok = (x0 >= 0) & (y0 >= 0) & (x0 < w - 1) & (y0 < h - 1)
+        x0o, y0o = x0[ok], y0[ok]
+        fx, fy = sx[ok] - x0o, sy[ok] - y0o
+        at = y0o * w + x0o
+        if img.ndim == 3:
+            fx, fy = fx[:, None], fy[:, None]
+        top = flat[at] * (1 - fx) + flat[at + 1] * fx
+        bot = flat[at + w] * (1 - fx) + flat[at + w + 1] * fx
+        piece = np.empty((r1 - r0,) + img.shape[1:], dtype=np.float32)
+        piece[...] = filled
+        piece[ok] = top * (1 - fy) + bot * fy
+        out[r0:r1] = quantized(piece) if levels else piece
+    _bands(h, band, pixels=h * w)
     return out
 
 
@@ -319,14 +413,21 @@ def lookup_table(d: DisplaySettings) -> np.ndarray:
 
 
 def render_gray(img: np.ndarray, d: DisplaySettings, crop: Optional[PixelRect] = None) -> np.ndarray:
-    """8-bit gray rendering of crop with the display mapping applied."""
+    """8-bit rendering of crop with the display mapping applied: gray, or RGB for a (h, w, 3) image, each channel mapped
+    the way a gray one is. img: float 0…1, or its 16-bit levels (quantized), which skip the float work."""
     if crop is not None:
-        h, w = img.shape
+        h, w = img.shape[:2]
         r = crop.normalized(w, h)
         x0, y0 = int(np.floor(r.x0 + 0.5)), int(np.floor(r.y0 + 0.5))
         x1, y1 = min(w, int(np.floor(r.x1 + 0.5))), min(h, int(np.floor(r.y1 + 0.5)))
         img = img[y0:max(y0 + 1, y1), x0:max(x0 + 1, x1)]
-    return lookup_table(d)[(img * 65535).astype(np.int64)]
+    lv = img if img.dtype == np.uint16 else quantized(img)
+    table = lookup_table(d)
+    if lv.size < (1 << 21):
+        return np.take(table, lv)
+    out = np.empty(lv.shape, dtype=table.dtype)   # a big picture: the rows split over the cores
+    _bands(lv.shape[0], lambda r0, r1: np.take(table, lv[r0:r1], out=out[r0:r1]), pixels=lv.size)
+    return out
 
 
 def auto_display(img: np.ndarray, keeping: DisplaySettings) -> DisplaySettings:
@@ -362,18 +463,23 @@ class WorkingImage:
         self.rotation = project.effective_rotation
         self.fill_padding_in_figure = project.effective_fill_padding
         img = source.gray.copy()
-        pad = padding_mask(img)
-        bg = median_4096(img, ~pad)
+        wedges = source.__dict__.get("_wedges")   # the old wedges and the background of the original: the same for every angle
+        if wedges is None:
+            pad = padding_mask(img)
+            wedges = source._wedges = (pad, median_4096(img, ~pad))
+        pad, bg = wedges
         img[pad] = bg
+        self._pad0 = pad   # the old wedges of the original, for the figure's pixels (see _processed)
         if abs(self.rotation) > 1e-6:
             img = rotated(img, self.rotation, bg)
-            probe = rotated(np.zeros(img.shape, np.float32), self.rotation, -1.0)
-            moved = rotated(pad.astype(np.float32), self.rotation, 1.0)
-            pad = (probe < -0.5) | (moved > 0.5)
+            outside = ~rotation_inside(img.shape[0], img.shape[1], self.rotation)   # the corners it uncovered
+            moved = rotated(pad.astype(np.float32), self.rotation, 1.0) > 0.5 if pad.any() else outside
+            pad = outside | moved
             bg = median_4096(img, ~pad)
         self.analysis = img
         self.padding = pad
         self.background = float(bg)
+        self._levels: dict = {}   # the 16-bit levels of the pixels each display mapping looks up, made once (see levels)
         self.figure_fill = {"background": self.background, "white": 1.0}.get(
             project.fill_mode, float(min(1, max(0, project.fill_value))))
 
@@ -424,35 +530,51 @@ class WorkingImage:
         out[self.padding] = 0
         return out.astype(np.float32)
 
-    def _processed(self) -> np.ndarray:
-        """Non-strict figure pixels: the original gray, old wedges optionally painted, rotated."""
-        img = self.source.gray.copy()
+    def _processed(self, color: bool = False, levels: bool = False) -> np.ndarray:
+        """Non-strict figure pixels: the original gray, old wedges optionally painted, rotated. color: an RGB image's
+        channels instead (same wedges, same rotation, same fill), else the gray copy every analysis uses."""
+        img = self.source.color.copy() if color and self.source.color is not None else self.source.gray.copy()
         if self.fill_padding_in_figure:
-            img[padding_mask(img)] = self.figure_fill
+            img[self._pad0] = self.figure_fill
         if abs(self.rotation) > 1e-6:
-            img = rotated(img, self.rotation, self.figure_fill)
-        return img
+            return rotated(img, self.rotation, self.figure_fill, levels)
+        return quantized(img) if levels else img
+
+    def levels(self, color: bool = False, original: bool = False) -> np.ndarray:
+        """The figure's pixels (processed: fill and rotation done; or original: the source as it is) as 16-bit levels, gray or
+        for color an (h, w, 3) array. Made on first use and kept, so a change of display range is one table lookup."""
+        key = (color, original)
+        if key not in self._levels:
+            if original:
+                f = self.source.color if color else self.source.gray
+            else:
+                f = self._processed(color=color, levels=True)
+            self._levels[key] = f if f.dtype == np.uint16 else quantized(f)
+        return self._levels[key]
 
     def figure_image(self, project: GelProject) -> np.ndarray:
         """The gel as it goes into the figure. Strict: the original pixels cropped on whole pixels (same values,
-        type and channels). Otherwise: fill, rotation and the display mapping applied, as 8-bit gray."""
+        type and channels). Otherwise: fill, rotation and the display mapping applied, as 8-bit gray, or 8-bit RGB for a
+        colour image."""
         r = project.effective_crop(self.width, self.height)
         if project.strict:
             return self.source.pixels[int(r.y0):int(r.y1), int(r.x0):int(r.x1)]
-        return render_gray(self._processed(), project.effective_display, r)
+        return render_gray(self.levels(color=self.source.channels == 3), project.effective_display, r)
 
     def view_image(self, project: GelProject, enhance: bool = False) -> np.ndarray:
         """Full frame for the editing canvas, as 8-bit gray or RGB. Brightness & contrast always show here; in a
         Strict project they stay on screen (like ImageJ's display range before Apply)."""
-        base = self.source.gray if project.strict else self._processed()
-        if enhance:
-            return render_gray(base, auto_display(base, DisplaySettings(invert=project.display.invert)))
+        rgb = self.source.channels == 3   # a colour image stays in colour, whatever the display range does to it
+        if enhance:   # the levels come from the gray copy, as for analysis
+            shown = self.levels(color=rgb, original=project.strict)
+            base = self.levels(original=project.strict) if rgb else shown
+            return render_gray(shown, auto_display(base, DisplaySettings(invert=project.display.invert)))
         if project.strict and project.display.is_identity:
             px = self.source.pixels
             if self.source.is_float:
                 return render_gray(self.source.gray, DisplaySettings())
             return (px >> 8).astype(np.uint8) if px.dtype == np.uint16 else px
-        return render_gray(base, project.display)
+        return render_gray(self.levels(color=rgb, original=project.strict), project.display)
 
 
 def initial_display(w: WorkingImage) -> DisplaySettings:

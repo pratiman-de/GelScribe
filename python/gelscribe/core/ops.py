@@ -13,43 +13,65 @@ from .model import (BandAnnotation, GelProject, LabelRow, Ladder, LadderBand, La
 # ---------------------------------------------------------------------------------------------------- lanes
 
 
-def add_divider(p: GelProject, x: float, y: float, w: int, h: int) -> LaneDivider:
-    """A vertical divider through the clicked point (one click per gap between lanes)."""
+def add_divider(p: GelProject, x: float, y: float, w: int, h: int, gel: Optional[int] = None) -> Optional[LaneDivider]:
+    """A vertical divider through the clicked point (one click per gap between lanes). gel: side by side, a gel's number
+    adds it to that gel's own lanes (dividers are in that gel's pixels)."""
+    if gel is not None and not (1 <= gel <= len(p.strips)):
+        return None
     d = LaneDivider.vertical(x, y)
-    p.lanes.dividers.append(d)
-    p.lanes.dividers.sort(key=lambda d: d.x_top + d.x_bottom)
-    p.sync_lane_centers(w, h)
+    l = p.lanes_of(gel)
+    l.dividers.append(d)
+    l.dividers.sort(key=lambda d: d.x_top + d.x_bottom)
+    p.set_lanes_of(l, gel)
+    p.sync_lane_centers(w, h, gel)
     return d
 
 
-def set_dividers(p: GelProject, xs: list[float], w: int, h: int) -> None:
-    """Replaces all dividers with vertical ones at xs, the dot a little inside the visible gel."""
-    c = p.effective_crop(w, h)
-    y = sround(c.y0 + c.height * 0.14)
-    p.lanes.dividers = [LaneDivider.vertical(x, y) for x in sorted(xs)]
-    p.sync_lane_centers(w, h)
+def set_dividers(p: GelProject, xs: list[float], w: int, h: int, gel: Optional[int] = None) -> None:
+    """Replaces all dividers with vertical ones at xs, the dot a little inside the visible gel. With none, the lanes go too,
+    so no lane centres are left behind without dividers. gel: a gel's number works on that gel's own lanes (side by side)."""
+    if gel is not None and not (1 <= gel <= len(p.strips)):
+        return
+    if gel is not None:
+        top, a = p.strips[gel - 1].used_rows(h)
+        height = a - top
+    else:
+        c = p.effective_crop(w, h)
+        top, height = c.y0, c.height
+    y = sround(top + height * 0.14)
+    l = p.lanes_of(gel)
+    l.dividers = [LaneDivider.vertical(x, y) for x in sorted(xs)]
+    if not l.dividers:
+        l.centers = []
+    p.set_lanes_of(l, gel)
+    p.sync_lane_centers(w, h, gel)
 
 
-def auto_dividers(p: GelProject, working, count: Optional[int]):
+def auto_dividers(p: GelProject, working, count: Optional[int], gel: Optional[int] = None):
     """For the command line: detect the lane centres, then put a divider midway between each two. Returns the fit;
     with fewer than two lanes found nothing changes."""
     from . import detect
-    fit = detect.lanes(working.darkness(p.display.bands_dark), count)
+    dark = p.strips[gel - 1].display.bands_dark if gel is not None and 1 <= gel <= len(p.strips) else p.display.bands_dark
+    fit = detect.lanes(working.darkness(dark), count)
     if len(fit.centers) >= 2:
-        p.lanes.outer_lanes = True
-        set_dividers(p, [(a + b) / 2 for a, b in zip(fit.centers, fit.centers[1:])], working.width, working.height)
+        l = p.lanes_of(gel)
+        l.outer_lanes = True
+        p.set_lanes_of(l, gel)
+        set_dividers(p, [(a + b) / 2 for a, b in zip(fit.centers, fit.centers[1:])], working.width, working.height, gel)
     return fit
 
 
-def geometry(p: GelProject, w: int, h: int) -> Optional[LaneGeometry]:
-    """Lane geometry, from dividers or (for dividerless configs) from centers."""
-    g = LaneGeometry.resolve(p.lanes, float(w), float(h))
+def geometry(p: GelProject, w: int, h: int, gel: Optional[int] = None) -> Optional[LaneGeometry]:
+    """Lane geometry, from dividers or (for dividerless configs) from centers. gel: a gel's number gives that gel's own
+    lanes (side by side), w x h being that gel's."""
+    lanes = p.lanes_of(gel)
+    g = LaneGeometry.resolve(lanes, float(w), float(h))
     if g is not None:
         return g
-    c = p.lanes.centers
+    c = lanes.centers
     if not c:
         return None
-    half = p.lanes.width / 0.85 / 2
+    half = lanes.width / 0.85 / 2
     lines = [Line(c[0] - half, c[0] - half)]
     for a, b in zip(c, c[1:]):
         m = (a + b) / 2
@@ -85,7 +107,11 @@ def rotate_marks(p: GelProject, delta: float, w: int, h: int) -> None:
     centers = p.lanes.centers
     if p.ladder is not None:
         l = p.ladder
-        x = centers[l.lane - 1] if 1 <= l.lane <= len(centers) else cx
+        if p.is_side_by_side:
+            lx = p.ladder_lane_x(None, l.lane)
+            x = lx[0] if lx is not None else cx
+        else:
+            x = centers[l.lane - 1] if 1 <= l.lane <= len(centers) else cx
         for band in l.bands:
             if band.strip is None:   # the other gels' marks are in their own pixels
                 band.y = sround(turn(x, band.y)[1])
@@ -131,6 +157,9 @@ def set_strict(p: GelProject, strict: bool, w: int, h: int, strip_sizes: list[Op
 
 def lane_x(p: GelProject, lane: int, strip: int) -> Optional[float]:
     """Lane n's centre in gel k's own pixels (the lanes are the main image's, lined up through the alignment)."""
+    if p.is_side_by_side:   # each gel's own lanes
+        r = p.ladder_lane_x(strip, lane) if 1 <= strip <= len(p.strips) else None
+        return r[0] if r is not None else None
     if not (1 <= lane <= len(p.lanes.centers) and 1 <= strip <= len(p.strips)):
         return None
     shift, scale = p.lane_alignment(strip)   # the lanes are the lanes gel's, wherever it sits
@@ -178,6 +207,30 @@ def set_strip_rotation(p: GelProject, strip: int, degrees: float, w: int, h: int
     rotate_strip_marks(p, strip, (0.0 if p.is_strict(strip) else s.rotate_deg) - before, w, h)
 
 
+def align_vertically(p: GelProject, gel: int, main_rows: tuple[float, float], gel_height: int) -> Optional[str]:
+    """Auto-align gel k vertically against the gel with the lanes (side by side), sizing it too (see strips.vertical_fit).
+    main_rows: the lanes gel's kept rows; gel_height: the gel's working height. Returns the note to show."""
+    from .strips import vertical_fit
+    if not 1 <= gel <= len(p.strips):
+        return None
+    s = p.strips[gel - 1]
+    v = vertical_fit(p, gel, main_rows, s.used_rows(gel_height), p.is_strict(gel))
+    s.shift, s.scale = v.shift, v.scale
+    return v.note
+
+
+def set_arrangement(p: GelProject, arrangement: str) -> None:
+    """Stacks the gels top to bottom ("top_to_bottom") or puts them side by side ("side_by_side"). Every gel keeps its lanes,
+    ticks, names and crop (a gel's own lanes stay in the file while stacked, unused). A gel's shift and stretch mean a sideways
+    place when stacked and a vertical one side by side, so they start over (0 and 1) when the arrangement changes: line the
+    gels up again after switching."""
+    if p.arrangement == arrangement:
+        return
+    p.arrangement = arrangement
+    for s in p.strips:
+        s.shift, s.scale = 0.0, 1.0
+
+
 def turn(p: GelProject, strip: Optional[int], quarter_turns: int, w: int, h: int) -> None:
     """Turns a gel by quarter turns (strip None = the main image); w×h is its working image before. A half turn
     carries its marks across; a quarter turn makes lanes run the other way, so that gel's marks go (crop, and for the
@@ -190,6 +243,14 @@ def turn(p: GelProject, strip: Optional[int], quarter_turns: int, w: int, h: int
             return
         s = p.strips[strip - 1]
         s.turn = (s.turn + q) % 4
+        if s.lanes is not None:   # this gel's own lanes (side by side) turn with it, or go when lanes would run the other way
+            if q == 2:
+                for d in s.lanes.dividers:
+                    d.x_top, d.x_bottom, d.dot_y = w - 1 - d.x_bottom, w - 1 - d.x_top, h - 1 - d.dot_y
+                s.lanes.dividers.sort(key=lambda d: d.x_top + d.x_bottom)
+            else:
+                s.lanes.dividers = []
+                s.lanes.centers = []
         if q == 2:
             s.top, s.bottom = (None if s.bottom is None else h - s.bottom), (None if s.top is None else h - s.top)
             s.left, s.right = (None if s.right is None else w - s.right), (None if s.left is None else w - s.left)
@@ -240,6 +301,8 @@ def turn(p: GelProject, strip: Optional[int], quarter_turns: int, w: int, h: int
         remove_annotations(p, lambda a: a.strip == strip)
     if strip is None and q == 2:
         p.sync_lane_centers(w, h)
+    if strip is not None and q == 2 and 1 <= strip <= len(p.strips) and p.strips[strip - 1].lanes is not None:
+        p.sync_lane_centers(w, h, strip)
 
 
 def remove_strip(p: GelProject, k: int) -> None:

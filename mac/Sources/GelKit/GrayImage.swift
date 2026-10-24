@@ -109,33 +109,55 @@ public struct GrayImage: Sendable {
 
     /// Rotates about the center (bilinear), keeping the canvas size; uncovered corners get `fill`.
     /// Positive degrees turn the picture counter-clockwise on screen.
-    public func rotated(degrees: Double, fill: Float) -> GrayImage {
-        guard abs(degrees) > 1e-6 else { return self }
+    public func rotated(degrees: Double, fill: Float) -> GrayImage { rotated(degrees: degrees, fill: fill, carrying: nil).image }
+
+    /// `rotated(degrees:fill:)`, also moving a mask along with the picture in the same pass: the new mask is true where the old one was
+    /// (bilinear, over a half) and where the rotation uncovered the corners. Rows run in parallel.
+    func rotated(degrees: Double, fill: Float, carrying mask: [Bool]?) -> (image: GrayImage, mask: [Bool]?) {
+        guard abs(degrees) > 1e-6 else { return (self, mask) }
         let t = degrees * .pi / 180
         let c = Float(cos(t)), s = Float(sin(t))
         let cx = Float(width - 1) / 2, cy = Float(height - 1) / 2
+        let w = width, h = height
         var out = [Float](repeating: fill, count: pixels.count)
+        var outMask = [Bool](repeating: mask != nil, count: mask == nil ? 0 : pixels.count)
+        let carry = mask != nil
+        let hasMask = mask?.contains(true) == true   // nothing to carry: the mask is just what the corners uncover
         pixels.withUnsafeBufferPointer { src in
             out.withUnsafeMutableBufferPointer { dst in
-                for y in 0..<height {
-                    let dy = Float(y) - cy
-                    for x in 0..<width {
-                        let dx = Float(x) - cx
-                        // inverse map: y axis points down, so screen-CCW is this rotation
-                        let sx = c * dx - s * dy + cx
-                        let sy = s * dx + c * dy + cy
-                        let x0 = Int(floor(sx)), y0 = Int(floor(sy))
-                        guard x0 >= 0, y0 >= 0, x0 < width - 1, y0 < height - 1 else { continue }
-                        let fx = sx - Float(x0), fy = sy - Float(y0)
-                        let i = y0 * width + x0
-                        let top = src[i] * (1 - fx) + src[i + 1] * fx
-                        let bot = src[i + width] * (1 - fx) + src[i + width + 1] * fx
-                        dst[y * width + x] = top * (1 - fy) + bot * fy
+                outMask.withUnsafeMutableBufferPointer { om in
+                    (mask ?? []).withUnsafeBufferPointer { mk in
+                        let dstBase = dst.baseAddress!, omBase = om.baseAddress
+                        DispatchQueue.concurrentPerform(iterations: h) { y in
+                            let dy = Float(y) - cy
+                            for x in 0..<w {
+                                let dx = Float(x) - cx
+                                // inverse map: y axis points down, so screen-CCW is this rotation
+                                let sx = c * dx - s * dy + cx
+                                let sy = s * dx + c * dy + cy
+                                let x0 = Int(floor(sx)), y0 = Int(floor(sy))
+                                guard x0 >= 0, y0 >= 0, x0 < w - 1, y0 < h - 1 else { continue }   // uncovered: fill, and masked
+                                let fx = sx - Float(x0), fy = sy - Float(y0)
+                                let i = y0 * w + x0
+                                let top = src[i] * (1 - fx) + src[i + 1] * fx
+                                let bot = src[i + w] * (1 - fx) + src[i + w + 1] * fx
+                                dstBase[y * w + x] = top * (1 - fy) + bot * fy
+                                if carry, let omBase {
+                                    var m = false
+                                    if hasMask {
+                                        let a = (mk[i] ? Float(1) : 0) * (1 - fx) + (mk[i + 1] ? Float(1) : 0) * fx
+                                        let b = (mk[i + w] ? Float(1) : 0) * (1 - fx) + (mk[i + w + 1] ? Float(1) : 0) * fx
+                                        m = a * (1 - fy) + b * fy > 0.5
+                                    }
+                                    omBase[y * w + x] = m
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
-        return GrayImage(width: width, height: height, pixels: out, sourceBits: sourceBits)
+        return (GrayImage(width: width, height: height, pixels: out, sourceBits: sourceBits), mask == nil ? nil : outMask)
     }
 
     /// Turned clockwise by `quarterTurns` × 90°: pixels moved, never changed.
@@ -165,22 +187,206 @@ public struct GrayImage: Sendable {
     }
 
     /// 8-bit gray rendering of `rect` with the display mapping applied.
-    public func cgImage(display: DisplaySettings, crop rect: PixelRect? = nil) -> CGImage? {
+    /// `decimate` > 1: a smaller picture, each pixel the mean of a block of that many pixels square (for drawing a big image zoomed out).
+    public func cgImage(display: DisplaySettings, crop rect: PixelRect? = nil, decimate f: Int = 1) -> CGImage? {
         let r = (rect ?? PixelRect(x0: 0, y0: 0, x1: Double(width), y1: Double(height))).normalized(width: width, height: height)
         let x0 = Int(r.x0.rounded()), y0 = Int(r.y0.rounded())
-        let w = max(1, min(width, Int(r.x1.rounded())) - x0), h = max(1, min(height, Int(r.y1.rounded())) - y0)
+        let fw = max(1, min(width, Int(r.x1.rounded())) - x0), fh = max(1, min(height, Int(r.y1.rounded())) - y0)
+        let f = max(1, f)
+        let w = (fw + f - 1) / f, h = (fh + f - 1) / f
         let lut = display.lookupTable()
         var bytes = [UInt8](repeating: 0, count: w * h)
-        for y in 0..<h {
-            let srow = (y0 + y) * width + x0
-            for x in 0..<w {
-                bytes[y * w + x] = lut[Int(pixels[srow + x] * 65535)]
+        if f == 1 {
+            pixels.withUnsafeBufferPointer { src in
+                bytes.withUnsafeMutableBufferPointer { dst in
+                    let dstBase = dst.baseAddress!, full = width
+                    DispatchQueue.concurrentPerform(iterations: h) { y in   // rows in parallel
+                        let srow = (y0 + y) * full + x0
+                        for x in 0..<w { dstBase[y * w + x] = lut[Int(src[srow + x] * 65535)] }
+                    }
+                }
+            }
+        } else {
+            pixels.withUnsafeBufferPointer { src in
+                bytes.withUnsafeMutableBufferPointer { dst in
+                    let dstBase = dst.baseAddress!, full = width
+                    DispatchQueue.concurrentPerform(iterations: h) { y in
+                        for x in 0..<w {
+                            var sum: Float = 0, n: Float = 0
+                            for yy in (y * f)..<min(fh, y * f + f) {
+                                let row = (y0 + yy) * full + x0
+                                for xx in (x * f)..<min(fw, x * f + f) { sum += src[row + xx]; n += 1 }
+                            }
+                            dstBase[y * w + x] = lut[Int(sum / n * 65535)]
+                        }
+                    }
+                }
             }
         }
         guard let provider = CGDataProvider(data: Data(bytes) as CFData),
               let space = CGColorSpace(name: CGColorSpace.genericGrayGamma2_2) else { return nil }
         return CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 8, bytesPerRow: w, space: space,
                        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue), provider: provider,
+                       decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+    }
+}
+
+/// A colour image as three float planes (0...1 each), in the file's own colour space, so a colour gel can be rotated, filled and
+/// mapped through the display range channel by channel exactly as `GrayImage` does its one channel.
+public struct RGBImage: Sendable {
+    public var r: GrayImage, g: GrayImage, b: GrayImage
+    let space: CGColorSpace
+
+    public var width: Int { r.width }
+    public var height: Int { r.height }
+
+    /// Every channel's pixel `i` set to `value` where `mask[i]`.
+    public mutating func fill(where mask: [Bool], with value: Float) {
+        for i in mask.indices where mask[i] { r.pixels[i] = value; g.pixels[i] = value; b.pixels[i] = value }
+    }
+
+    public func rotated(degrees: Double, fill: Float) -> RGBImage {
+        guard abs(degrees) > 1e-6 else { return self }
+        return RGBImage(r: r.rotated(degrees: degrees, fill: fill), g: g.rotated(degrees: degrees, fill: fill),
+                        b: b.rotated(degrees: degrees, fill: fill), space: space)
+    }
+
+    /// The pixels as 16-bit integers, rounded.
+    func packed() -> RGB16 {
+        let n = width * height
+        let buf = NSMutableData(length: n * 8)!
+        let o = buf.mutableBytes.bindMemory(to: UInt16.self, capacity: n * 4)
+        r.pixels.withUnsafeBufferPointer { rp in g.pixels.withUnsafeBufferPointer { gp in b.pixels.withUnsafeBufferPointer { bp in
+            for i in 0..<n {
+                o[i * 4] = UInt16(min(65535, max(0, (rp[i] * 65535).rounded())))
+                o[i * 4 + 1] = UInt16(min(65535, max(0, (gp[i] * 65535).rounded())))
+                o[i * 4 + 2] = UInt16(min(65535, max(0, (bp[i] * 65535).rounded())))
+                o[i * 4 + 3] = 65535
+            }
+        } } }
+        return RGB16(width: width, height: height, data: buf, space: space)
+    }
+}
+
+/// A colour image as 16-bit R, G, B, (skipped) interleaved, in the file's own colour space: what a display change re-maps. Cached by
+/// `WorkingImage`, so moving the brightness slider costs one table lookup per value, no float work.
+public final class RGB16: @unchecked Sendable {
+    public let width: Int, height: Int
+    let data: NSMutableData
+    let space: CGColorSpace
+
+    init(width: Int, height: Int, data: NSMutableData, space: CGColorSpace) {
+        self.width = width; self.height = height; self.data = data; self.space = space
+    }
+
+    /// Nil unless `cg` is an RGB image. 8-bit values arrive as v x 257, so every channel keeps its stored level.
+    public static func from(cgImage cg: CGImage) -> RGB16? {
+        guard cg.colorSpace?.model == .rgb, let space = cg.colorSpace else { return nil }
+        let w = cg.width, h = cg.height
+        guard let buf = NSMutableData(length: w * h * 8) else { return nil }
+        let info = CGImageAlphaInfo.noneSkipLast.rawValue | CGBitmapInfo.byteOrder16Little.rawValue
+        guard let ctx = CGContext(data: buf.mutableBytes, width: w, height: h, bitsPerComponent: 16, bytesPerRow: w * 8,
+                                  space: space, bitmapInfo: info) else { return nil }
+        ctx.interpolationQuality = .none
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return RGB16(width: w, height: h, data: buf, space: space)
+    }
+
+    /// A copy with every channel of the pixels where `mask` is true set to `value` (0...1).
+    func filled(where mask: [Bool], with value: Float) -> RGB16 {
+        let n = width * height
+        let copy = NSMutableData(data: data as Data)
+        let o = copy.mutableBytes.bindMemory(to: UInt16.self, capacity: n * 4)
+        let v = UInt16(min(65535, max(0, (value * 65535).rounded())))
+        for i in 0..<n where mask[i] { o[i * 4] = v; o[i * 4 + 1] = v; o[i * 4 + 2] = v }
+        return RGB16(width: width, height: height, data: copy, space: space)
+    }
+
+    /// Rotated about the centre (bilinear on each channel, rows in parallel), keeping the canvas size; uncovered corners get `fill`.
+    /// The same mapping as `GrayImage.rotated`, in 16-bit integers.
+    func rotated(degrees: Double, fill: Float) -> RGB16 {
+        guard abs(degrees) > 1e-6, let out = NSMutableData(length: width * height * 8) else { return self }
+        let t = degrees * .pi / 180
+        let c = Float(cos(t)), s = Float(sin(t))
+        let w = width, h = height
+        let cx = Float(w - 1) / 2, cy = Float(h - 1) / 2
+        let f = UInt16(min(65535, max(0, (fill * 65535).rounded())))
+        let src = data.bytes.bindMemory(to: UInt16.self, capacity: w * h * 4)
+        let dst = out.mutableBytes.bindMemory(to: UInt16.self, capacity: w * h * 4)
+        DispatchQueue.concurrentPerform(iterations: h) { y in
+            let dy = Float(y) - cy
+            var o = y * w * 4
+            for x in 0..<w {
+                let dx = Float(x) - cx
+                let sx = c * dx - s * dy + cx, sy = s * dx + c * dy + cy
+                let x0 = Int(floor(sx)), y0 = Int(floor(sy))
+                if x0 >= 0, y0 >= 0, x0 < w - 1, y0 < h - 1 {
+                    let fx = sx - Float(x0), fy = sy - Float(y0)
+                    let i = (y0 * w + x0) * 4, j = i + w * 4
+                    let w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy), w01 = (1 - fx) * fy, w11 = fx * fy
+                    for k in 0..<3 {
+                        let v = Float(src[i + k]) * w00 + Float(src[i + 4 + k]) * w10 + Float(src[j + k]) * w01 + Float(src[j + 4 + k]) * w11
+                        dst[o + k] = UInt16(min(65535, max(0, v.rounded())))
+                    }
+                } else {
+                    dst[o] = f; dst[o + 1] = f; dst[o + 2] = f
+                }
+                dst[o + 3] = 65535
+                o += 4
+            }
+        }
+        return RGB16(width: w, height: h, data: out, space: space)
+    }
+
+    /// Three float planes, for rotating.
+    func planes(bits: Int) -> RGBImage {
+        let n = width * height
+        let p = data.bytes.bindMemory(to: UInt16.self, capacity: n * 4)
+        var out = [[Float]](repeating: [Float](repeating: 0, count: n), count: 3)
+        for c in 0..<3 { out[c].withUnsafeMutableBufferPointer { o in for i in 0..<n { o[i] = Float(p[i * 4 + c]) / 65535 } } }
+        return RGBImage(r: GrayImage(width: width, height: height, pixels: out[0], sourceBits: bits),
+                        g: GrayImage(width: width, height: height, pixels: out[1], sourceBits: bits),
+                        b: GrayImage(width: width, height: height, pixels: out[2], sourceBits: bits), space: space)
+    }
+
+    /// 8-bit RGB rendering of `rect` with the display mapping applied to each channel (rows in parallel).
+    /// `decimate` > 1: a smaller picture, each pixel the mean of a block of that many pixels square, per channel (see `GrayImage.cgImage`).
+    public func cgImage(display: DisplaySettings, crop rect: PixelRect? = nil, decimate f: Int = 1) -> CGImage? {
+        let r0 = (rect ?? PixelRect(x0: 0, y0: 0, x1: Double(width), y1: Double(height))).normalized(width: width, height: height)
+        let x0 = Int(r0.x0.rounded()), y0 = Int(r0.y0.rounded())
+        let fw = max(1, min(width, Int(r0.x1.rounded())) - x0), fh = max(1, min(height, Int(r0.y1.rounded())) - y0)
+        let f = max(1, f)
+        let w = (fw + f - 1) / f, h = (fh + f - 1) / f
+        let lut = display.lookupTable()
+        guard let out = NSMutableData(length: w * h * 4) else { return nil }
+        let src = data.bytes.bindMemory(to: UInt16.self, capacity: width * height * 4)
+        let dst = out.mutableBytes.bindMemory(to: UInt8.self, capacity: w * h * 4)
+        let full = width
+        lut.withUnsafeBufferPointer { t in
+            DispatchQueue.concurrentPerform(iterations: h) { y in
+                if f == 1 {
+                    var i = ((y0 + y) * full + x0) * 4, o = y * w * 4
+                    for _ in 0..<w {
+                        dst[o] = t[Int(src[i])]; dst[o + 1] = t[Int(src[i + 1])]; dst[o + 2] = t[Int(src[i + 2])]; dst[o + 3] = 255
+                        i += 4; o += 4
+                    }
+                    return
+                }
+                var o = y * w * 4
+                for x in 0..<w {
+                    var r = 0, g = 0, b = 0, n = 0
+                    for yy in (y * f)..<min(fh, y * f + f) {
+                        var i = ((y0 + yy) * full + x0 + x * f) * 4
+                        for _ in (x * f)..<min(fw, x * f + f) { r += Int(src[i]); g += Int(src[i + 1]); b += Int(src[i + 2]); n += 1; i += 4 }
+                    }
+                    dst[o] = t[r / n]; dst[o + 1] = t[g / n]; dst[o + 2] = t[b / n]; dst[o + 3] = 255
+                    o += 4
+                }
+            }
+        }
+        guard let provider = CGDataProvider(data: out as CFData) else { return nil }
+        return CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4, space: space,
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue), provider: provider,
                        decode: nil, shouldInterpolate: false, intent: .defaultIntent)
     }
 }
@@ -408,6 +614,10 @@ public struct SourceImage: @unchecked Sendable {   // CGImage is immutable and t
 
     public var width: Int { cgImage.width }
     public var height: Int { cgImage.height }
+    /// An RGB image: its figure pixels stay colour whatever is done to them.
+    public var isColor: Bool { cgImage.colorSpace?.model == .rgb }
+    /// How the original is stored, "8-bit RGB" for a colour one, nil for any other.
+    public var colorStorage: String? { isColor ? "\(bitsPerComponent)-bit RGB" : nil }
     public var bitsPerComponent: Int { cgImage.bitsPerComponent }
     public var colorModel: String {
         switch cgImage.colorSpace?.model {
@@ -434,9 +644,20 @@ public struct WorkingImage: @unchecked Sendable {
     public let fillPaddingInFigure: Bool
     /// Paint for rotation corners and old wedges in the figure (non-strict). Analysis always uses `background`.
     public private(set) var figureFill: Float = 1
+    /// The padding wedges found in the unrotated picture (before rotation moved them), for filling the figure's pixels.
+    private let sourcePadding: [Bool]
     /// The project's strips' working images, when whoever made this one attached them (the LLM tools' hosts do), so
     /// a figure can be drawn whole from it. See `StackedFigure`.
     public var strips: [WorkingImage] = []
+
+    /// The figure pixels before the display mapping (fill and rotation done), made once: a brightness or contrast change only
+    /// re-maps them. Shared by copies of this value; valid for its lifetime, which every setting that changes them ends.
+    private final class Processed: @unchecked Sendable {
+        let lock = NSLock()
+        var gray: GrayImage?
+        var rgb: RGB16?
+    }
+    private let cache = Processed()
 
     public init(source: SourceImage, project: GelProject) {
         let source = source.turned(project.turn)   // lossless, so before everything, Strict or not
@@ -447,16 +668,14 @@ public struct WorkingImage: @unchecked Sendable {
 
         var img = source.gray
         var pad = Self.paddingMask(img)
+        sourcePadding = pad
         var bg = img.median { !pad[$0] }
-        for i in pad.indices where pad[i] { img.pixels[i] = bg }
+        if pad.contains(true) { for i in pad.indices where pad[i] { img.pixels[i] = bg } }
         if abs(rotation) > 1e-6 {
-            img = img.rotated(degrees: rotation, fill: bg)
-            // corners uncovered by the rotation are padding too
-            let probe = GrayImage(width: img.width, height: img.height,
-                                  pixels: [Float](repeating: 0, count: img.pixels.count)).rotated(degrees: rotation, fill: -1)
-            let movedPad = GrayImage(width: img.width, height: img.height, pixels: pad.map { $0 ? 1 : 0 })
-                .rotated(degrees: rotation, fill: 1)
-            pad = zip(probe.pixels, movedPad.pixels).map { $0 < -0.5 || $1 > 0.5 }
+            // the picture and its padding move together, and the corners the rotation uncovers are padding too
+            let r = img.rotated(degrees: rotation, fill: bg, carrying: pad)
+            img = r.image
+            pad = r.mask ?? pad
             bg = img.median { !pad[$0] }
         }
         analysis = img
@@ -489,25 +708,32 @@ public struct WorkingImage: @unchecked Sendable {
     /// The gel image as it goes into the figure.
     ///
     /// Strict: the original decoded image cropped on whole pixels — same values, bit depth and color space, never
-    /// resampled. Otherwise: padding fill (if enabled), rotation and the display mapping applied, as 8-bit gray.
-    public func figureImage(project: GelProject) -> CGImage? {
+    /// resampled. Otherwise: padding fill (if enabled), rotation and the display mapping applied, as 8-bit gray (8-bit
+    /// RGB for a colour image, each channel mapped alike).
+    /// `asGray`: a colour image is mapped as its gray luminance instead (for a figure stored as gray).
+    public func figureImage(project: GelProject, asGray: Bool = false) -> CGImage? {
         let r = project.effectiveCrop(width: width, height: height)
         if project.strict {
             return source.cgImage.cropping(to: CGRect(x: r.x0, y: r.y0, width: r.width, height: r.height))
         }
-        return processed().cgImage(display: project.effectiveDisplay, crop: r)
+        if !asGray, let rgb = processedRGB() { return rgb.cgImage(display: project.effectiveDisplay, crop: r) }
+        return processedGray().cgImage(display: project.effectiveDisplay, crop: r)
     }
 
     /// Full-frame image for the editing canvas. Brightness & contrast always show here; in a Strict project they stay
     /// on screen (like ImageJ's display range before Apply) and exports keep the original pixels. `enhance` is the
     /// older screen-only auto stretch, still honoured for projects that had it on.
-    public func viewImage(project: GelProject, enhance: Bool) -> CGImage? {
-        let base = project.strict ? source.gray : processed()
-        if enhance {
-            return base.cgImage(display: .auto(for: base, keeping: DisplaySettings(invert: project.display.invert)))
-        }
-        if project.strict && project.display.isIdentity { return source.cgImage }
-        return base.cgImage(display: project.display)
+    /// `maxSide`: a picture at most about that many pixels along its long side, every pixel the mean of a block (for drawing a big image
+    /// zoomed out: an exact factor of the image's size, never more than needed); the strict identity picture is always the original.
+    public func viewImage(project: GelProject, enhance: Bool, maxSide: Int? = nil) -> CGImage? {
+        if !enhance, project.strict, project.display.isIdentity { return source.cgImage }
+        let f = maxSide.map { max(1, (max(width, height) + $0 - 1) / $0) } ?? 1
+        // a colour image stays colour on screen: the same mapping on each channel
+        let rgb = source.isColor ? processedRGB() : nil
+        let base = (enhance || rgb == nil) ? (project.strict ? source.gray : processedGray()) : nil
+        let display = enhance ? DisplaySettings.auto(for: base!, keeping: DisplaySettings(invert: project.display.invert)) : project.display
+        if let rgb { return rgb.cgImage(display: display, decimate: f) }
+        return base!.cgImage(display: display, decimate: f)
     }
 
     /// The gel's values inside `crop`, padding left out, with a `bins`-step histogram across them.
@@ -548,11 +774,33 @@ public struct WorkingImage: @unchecked Sendable {
     private func processed() -> GrayImage {
         var img = source.gray
         if fillPaddingInFigure {
-            let pad0 = Self.paddingMask(img)
-            for i in pad0.indices where pad0[i] { img.pixels[i] = figureFill }
+            if sourcePadding.contains(true) { for i in sourcePadding.indices where sourcePadding[i] { img.pixels[i] = figureFill } }
         }
         if abs(rotation) > 1e-6 { img = img.rotated(degrees: rotation, fill: figureFill) }
         return img
+    }
+
+    /// `processed()`, made once.
+    private func processedGray() -> GrayImage {
+        cache.lock.lock(); defer { cache.lock.unlock() }
+        if let g = cache.gray { return g }
+        let g = processed()
+        cache.gray = g
+        return g
+    }
+
+    /// `processed()` for a colour image: the same fill and rotation on each channel (none of either when the original pixels are
+    /// kept: the decoded image as it is), made once. Nil for a gray one.
+    private func processedRGB() -> RGB16? {
+        guard source.isColor else { return nil }
+        cache.lock.lock(); defer { cache.lock.unlock() }
+        if let c = cache.rgb { return c }
+        guard let base = RGB16.from(cgImage: source.cgImage) else { return nil }
+        var out = base
+        if fillPaddingInFigure, sourcePadding.contains(true) { out = out.filled(where: sourcePadding, with: figureFill) }
+        if abs(rotation) > 1e-6 { out = out.rotated(degrees: rotation, fill: figureFill) }
+        cache.rgb = out
+        return out
     }
 
     /// The flat wedges left in the corners when an image was rotated before export, dilated by 3 px to swallow
@@ -589,6 +837,7 @@ public struct WorkingImage: @unchecked Sendable {
                 if region.count >= minPixels { for i in region { mask[i] = true } }
             }
         }
+        guard mask.contains(true) else { return mask }   // nothing found, nothing to dilate
         for _ in 0..<3 {   // dilate 3 px (4-neighbour)
             var next = mask
             for y in 0..<h {

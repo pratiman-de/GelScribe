@@ -164,8 +164,24 @@ final class Workspace {
     /// The gel on view is one of the stacked ones (the gel with the lanes shows as a figure of its own, like a single gel).
     var viewsOtherGel: Bool { showsGel && activeStrip != nil }
     /// The lane dividers belong to the gel with the lanes, so they can't be set while another gel is on view.
-    var lanesToolOff: Bool { viewsOtherGel }
-    var lanesToolNote: String { "Lane dividers are set on \(gelName(nil)), the gel with the lanes." }
+    /// Side by side every gel has its own lanes, set in that gel's own view; the figure itself has no dividers to set.
+    var lanesToolOff: Bool { project.isSideBySide ? !showsGel : viewsOtherGel }
+    var lanesToolNote: String {
+        project.isSideBySide ? "Lane dividers are set in each gel's own view: choose a gel in the switcher above the figure."
+            : "Lane dividers are set on \(gelName(nil)), the gel with the lanes."
+    }
+    /// The gel whose lane dividers the Lane tool edits: the gel on view when the gels sit side by side, else the gel with the lanes (nil).
+    var laneGel: Int? { project.isSideBySide && showsGel ? activeStrip : nil }
+    /// Its dividers and lanes, its working size, and the rows of it the figure keeps (where the divider ends are).
+    var laneSet: Lanes { project.lanes(ofGel: laneGel) }
+    var laneGelSize: (width: Int, height: Int) { gelSize(laneGel) ?? (imageWidth, imageHeight) }
+    var laneRows: (y0: Double, y1: Double) {
+        if let k = laneGel, k >= 1, k <= project.strips.count {
+            let r = project.strips[k - 1].usedRows(height: laneGelSize.height)
+            return (r.top, r.bottom)
+        }
+        return (crop.y0, crop.y1)
+    }
 
     /// Which gel is on view (nil = the figure), and which was when the view last changed.
     private var viewedKey: String? { showsGel ? (activeStrip.map { "gel \($0)" } ?? "lanes") : nil }
@@ -264,15 +280,47 @@ final class Workspace {
     /// Whether the gel's image is decoded: what menu commands check, since `working` itself isn't observed.
     private(set) var imageReady = false
     @ObservationIgnored private(set) var dark: GrayImage?
-    @ObservationIgnored private(set) var displayFull: CGImage?
+    /// The gel with the lanes' full-frame screen image as built, at `builtRotation`; `displayFull` is what is shown: while a new angle's
+    /// pixels are being made in the background it is this one turned by the difference on a small copy, so changing the angle is
+    /// instant (see `RotationPreview`).
+    @ObservationIgnored private var displayBuilt: CGImage?
+    /// The same at about half the size, for drawing while the image is shown much smaller than its pixels (see `viewReduced`): a
+    /// brightness change makes it from the 16-bit pixels in a few milliseconds, where the full image takes the screen far longer to draw.
+    @ObservationIgnored private var displayProxy: CGImage?
+    /// Set by the canvas when it draws: the gel is on screen at under half a screen pixel per image pixel, so the reduced pictures are
+    /// as sharp as can be seen, and far quicker to draw. Pictures are always what image pixels `imageWidth` × `imageHeight` describe,
+    /// at some size; `cropped` and the stacking scale by `image.width / imageWidth`.
+    @ObservationIgnored var viewReduced = false
+    @ObservationIgnored private var baseKey: Int?
+    @ObservationIgnored private var builtRotation = 0.0
+    @ObservationIgnored private var mainBuild = RotationBuild()
+    @ObservationIgnored private var mainPreview = RotationPreview.Cache()
+    /// Changes whenever a background build lands, so views that show numbers from the new pixels (the histogram) follow.
+    private(set) var cacheRevision = 0
+    /// Set by the canvas: draw again (a background build finished).
+    @ObservationIgnored var redraw: (() -> Void)?
+
+    /// What the canvas draws for the gel with the lanes: `displayBuilt`, turned to the angle now asked for until its pixels are ready.
+    /// At most the preview's own size when turned; consumers scale by `image.width / imageWidth`.
+    var displayFull: CGImage? {
+        guard let built = displayBuilt else { return nil }
+        let base = viewReduced ? displayProxy ?? built : built
+        let d = project.effectiveRotation - builtRotation
+        guard abs(d) > 1e-9 else { return base }
+        return mainPreview.image(of: base, key: "\(viewKey ?? "")|\(viewReduced)", degrees: d, fill: Double(working?.figureFill ?? 1)) ?? base
+    }
+
+    /// The angle difference being previewed (0 when the pixels are current), for cache keys.
+    private var mainPending: Double { project.effectiveRotation - builtRotation }
 
     /// Rebuilds decode/analysis caches only when the image or a pixel-affecting setting changed.
-    func refreshCaches() {
+    func refreshCaches(settle: Bool = false) {
+        if lanesToolOff, tool == .lanes { tool = .select }   // side by side, the figure has no dividers to set (each gel's own view has)
         if gelViewOn, project.strips.isEmpty { gelViewOn = false }   // the gels are gone (removed, or an undo): the figure is all there is
         // the gel on view changed without being asked (an undo took the gel away): the new one is shown to fit
         if viewedKey != lastViewed, viewedKey != nil { gelShownChanged() } else { lastViewed = viewedKey }
         guard let data = document.imageData else {
-            source = nil; working = nil; dark = nil; displayFull = nil; imageKey = nil; viewKey = nil
+            source = nil; working = nil; dark = nil; displayBuilt = nil; imageKey = nil; viewKey = nil; baseKey = nil
             if imageWidth != 0 { imageWidth = 0; imageHeight = 0; measuredBackground = nil }
             if mainProblem != nil { mainProblem = nil }
             stripCache = [:]; stripFailures = [:]
@@ -282,48 +330,111 @@ final class Workspace {
         }
         let p = project
         var h = Hasher()
-        h.combine(data.count); h.combine(data.prefix(64)); h.combine(p.strict); h.combine(p.rotateDeg); h.combine(p.fillPadding)
+        h.combine(data.count); h.combine(data.prefix(64)); h.combine(p.strict); h.combine(p.fillPadding)
         h.combine(p.fillMode); h.combine(p.fillValue); h.combine(p.turn); h.combine(p.display.bandsDark)   // the snapping map follows it
-        let key = h.finalize()
-        if key != imageKey {
+        let base = h.finalize()
+        let rot = p.effectiveRotation
+        if base != baseKey || working == nil {   // another image, or a setting that changes every pixel: now
             do {
                 if source == nil || source!.data.count != data.count || imageKey == nil {
                     source = try GelPackage(project: p, imageData: data).decodeMain()
                 }
-                working = WorkingImage(source: source!, project: p)
-                dark = working!.darkness(bandsDark: p.display.bandsDark)
-                imageKey = key
+                let w = WorkingImage(source: source!, project: p)
+                installMain(w, dark: w.darkness(bandsDark: p.display.bandsDark), rotation: rot, base: base)
+                mainBuild.serial += 1
                 viewKey = nil
-                let w = working!
-                let bg = Int((Double(w.background) * 255).rounded())
-                if imageWidth != w.width { imageWidth = w.width }
-                if imageHeight != w.height { imageHeight = w.height }
-                if measuredBackground != bg { measuredBackground = bg }
-                if mainProblem != nil { mainProblem = nil }
             } catch {
                 if mainProblem != error.localizedDescription { mainProblem = error.localizedDescription }
-                refreshStripCaches(p)   // the other gels are there all the same
+                refreshStripCaches(p, settle: settle)   // the other gels are there all the same
                 return
+            }
+        } else if rot != builtRotation {
+            // only the angle changed: its pixels are made in the background (or now, when someone needs them exact), and the
+            // old ones are shown turned by the difference meanwhile
+            if settle {
+                mainBuild.serial += 1
+                let w = WorkingImage(source: source!, project: p)
+                installMain(w, dark: w.darkness(bandsDark: p.display.bandsDark), rotation: rot, base: base)
+                viewKey = nil
+            } else {
+                startMainBuild(p, rotation: rot, base: base)
             }
         }
         let d = p.display
-        let vk = "\(key)|\(enhanceView)|\(d.black)|\(d.white)|\(d.gamma)|\(d.invert)"
+        let vk = "\(imageKey ?? 0)|\(enhanceView)|\(d.black)|\(d.white)|\(d.gamma)|\(d.invert)"
         if vk != viewKey, let working {
-            displayFull = working.viewImage(project: p, enhance: enhanceView)
+            (displayBuilt, displayProxy) = Self.views(of: working, project: p, enhance: enhanceView)
             viewKey = vk
         }
-        refreshStripCaches(p)
+        refreshStripCaches(p, settle: settle)
+    }
+
+    /// A gel's screen image and, for a big one, its reduced copy (see `displayProxy`).
+    nonisolated static func views(of w: WorkingImage, project p: GelProject, enhance: Bool) -> (CGImage?, CGImage?) {
+        let full = w.viewImage(project: p, enhance: enhance)
+        guard max(w.width, w.height) > RotationPreview.maxSide, let full else { return (full, nil) }
+        let proxy = w.viewImage(project: p, enhance: enhance, maxSide: RotationPreview.maxSide)
+        return (full, proxy === full ? nil : proxy)
+    }
+
+    /// Takes `w` (the gel with the lanes at `rotation`) and its darkness map as the current caches.
+    private func installMain(_ w: WorkingImage, dark map: GrayImage, rotation: Double, base: Int) {
+        working = w
+        dark = map
+        baseKey = base
+        builtRotation = rotation
+        var h = Hasher(); h.combine(base); h.combine(rotation)
+        imageKey = h.finalize()
+        let bg = Int((Double(w.background) * 255).rounded())
+        if imageWidth != w.width { imageWidth = w.width }
+        if imageHeight != w.height { imageHeight = w.height }
+        if measuredBackground != bg { measuredBackground = bg }
+        if mainProblem != nil { mainProblem = nil }
+    }
+
+    /// Starts making the pixels for `rotation` in the background, once the angle has stopped changing for a moment (a slider drag
+    /// asks for a new one every few milliseconds; only the last is worth making). One build at a time; when it lands, the next look
+    /// starts another if the angle moved on.
+    private func startMainBuild(_ p: GelProject, rotation: Double, base: Int) {
+        guard let source, mainBuild.shouldStart(for: rotation, redraw: { [weak self] in self?.redraw?() }) else { return }
+        mainBuild.running = true
+        let serial = mainBuild.serial, enhance = enhanceView, started = base
+        Task.detached(priority: .userInitiated) {
+            let w = WorkingImage(source: source, project: p)
+            let dk = w.darkness(bandsDark: p.display.bandsDark)
+            let (view, proxy) = Workspace.views(of: w, project: p, enhance: enhance)
+            let result = RotationBuild.Result(working: w, dark: dk, view: view, proxy: proxy)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.mainBuild.running = false
+                if self.mainBuild.serial == serial, self.baseKey == started {   // nothing replaced these pixels meanwhile
+                    self.installMain(result.working, dark: result.dark, rotation: rotation, base: started)
+                    let d = p.display
+                    self.viewKey = "\(self.imageKey ?? 0)|\(enhance)|\(d.black)|\(d.white)|\(d.gamma)|\(d.invert)"
+                    self.displayBuilt = result.view
+                    self.displayProxy = result.proxy
+                    self.cacheRevision += 1
+                }
+                self.redraw?()
+            }
+        }
     }
 
     // MARK: stacked gels (pieces of a cut membrane, or more gels of the same samples)
 
     private struct PieceCache {
         var key: Int
+        /// Everything that decides this gel's pixels but its angle, and the angle they were made at.
+        var base = 0
+        var rotation = 0.0
+        var build = RotationBuild()
+        var preview = RotationPreview.Cache()
         var source: SourceImage
         var working: WorkingImage
         var dark: GrayImage
         var viewKey = ""
         var view: CGImage?
+        var proxy: CGImage?
     }
     /// By image file name, so removing a strip doesn't muddle the others.
     @ObservationIgnored private var stripCache: [String: PieceCache] = [:]
@@ -335,7 +446,7 @@ final class Workspace {
     /// Why a gel's image can't be used, by its file name (observed, so the panels and the status pill follow).
     private(set) var stripProblems: [String: String] = [:]
 
-    private func refreshStripCaches(_ p: GelProject) {
+    private func refreshStripCaches(_ p: GelProject, settle: Bool = false) {
         var sizes: [CGSize?] = []
         var problems: [String: String] = [:]
         var package: GelPackage?   // made only when a gel has to be decoded
@@ -346,11 +457,25 @@ final class Workspace {
                 continue
             }
             var h = Hasher()
-            h.combine(data.count); h.combine(data.prefix(64)); h.combine(p.isStrict(gel: i + 1)); h.combine(s.rotateDeg); h.combine(s.turn)
+            h.combine(data.count); h.combine(data.prefix(64)); h.combine(p.isStrict(gel: i + 1)); h.combine(s.turn)
             h.combine(p.fillPadding); h.combine(p.fillMode); h.combine(p.fillValue); h.combine(s.display.bandsDark)
-            let key = h.finalize()
+            let base = h.finalize()
+            let rot = p.isStrict(gel: i + 1) ? 0 : s.rotateDeg
+            var k = Hasher(); k.combine(base); k.combine(rot)
+            let key = k.finalize()
             var c = stripCache[s.image]
-            if c?.key != key {
+            if let old = c, old.base == base, old.rotation != rot {   // only the angle changed: see `refreshCaches`
+                if settle {
+                    let w = WorkingImage(source: old.source, project: p.stripProject(i + 1))
+                    var n = old
+                    n.build.serial += 1
+                    n.key = key; n.rotation = rot; n.working = w; n.dark = w.darkness(bandsDark: s.display.bandsDark); n.viewKey = ""
+                    c = n
+                } else {
+                    startStripBuild(p, strip: i + 1, rotation: rot, base: base, cache: old)
+                    c = stripCache[s.image]
+                }
+            } else if c?.base != base {
                 if let failed = stripFailures[s.image], failed.key == key {
                     problems[s.image] = failed.message
                     sizes.append(nil)
@@ -365,7 +490,7 @@ final class Workspace {
                         source = try package.decodeStrip(i + 1)   // fails with "Gel N's image (file) can't be read."
                     }
                     let w = WorkingImage(source: source, project: p.stripProject(i + 1))
-                    c = PieceCache(key: key, source: source, working: w, dark: w.darkness(bandsDark: s.display.bandsDark))
+                    c = PieceCache(key: key, base: base, rotation: rot, source: source, working: w, dark: w.darkness(bandsDark: s.display.bandsDark))
                 } catch {
                     stripFailures[s.image] = (key, error.localizedDescription)
                     stripCache[s.image] = nil
@@ -376,9 +501,9 @@ final class Workspace {
             }
             guard var cache = c else { sizes.append(nil); continue }
             let d = s.display
-            let vk = "\(key)|\(d.black)|\(d.white)|\(d.gamma)|\(d.invert)"
+            let vk = "\(cache.key)|\(d.black)|\(d.white)|\(d.gamma)|\(d.invert)"
             if vk != cache.viewKey {
-                cache.view = cache.working.viewImage(project: p.stripProject(i + 1), enhance: false)
+                (cache.view, cache.proxy) = Self.views(of: cache.working, project: p.stripProject(i + 1), enhance: false)
                 cache.viewKey = vk
             }
             stripCache[s.image] = cache
@@ -391,6 +516,39 @@ final class Workspace {
         if problems != stripProblems { stripProblems = problems }
     }
 
+    /// Makes strip `k`'s pixels for `rotation` in the background (see `startMainBuild`); its old ones are shown turned meanwhile.
+    private func startStripBuild(_ p: GelProject, strip k: Int, rotation: Double, base: Int, cache old: PieceCache) {
+        let name = p.strips[k - 1].image
+        var c = old
+        guard c.build.shouldStart(for: rotation, redraw: { [weak self] in self?.redraw?() }) else { stripCache[name] = c; return }
+        c.build.running = true
+        stripCache[name] = c
+        let serial = c.build.serial, project = p.stripProject(k), source = old.source, bandsDark = p.strips[k - 1].display.bandsDark
+        Task.detached(priority: .userInitiated) {
+            let w = WorkingImage(source: source, project: project)
+            let dk = w.darkness(bandsDark: bandsDark)
+            let (view, proxy) = Workspace.views(of: w, project: project, enhance: false)
+            let result = RotationBuild.Result(working: w, dark: dk, view: view, proxy: proxy)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                guard var c = self.stripCache[name] else { self.redraw?(); return }
+                c.build.running = false
+                if c.build.serial == serial, c.base == base {
+                    var h = Hasher(); h.combine(base); h.combine(rotation)
+                    c.key = h.finalize(); c.rotation = rotation
+                    c.working = result.working; c.dark = result.dark
+                    let d = project.display
+                    c.viewKey = "\(c.key)|\(d.black)|\(d.white)|\(d.gamma)|\(d.invert)"
+                    c.view = result.view
+                    c.proxy = result.proxy
+                    self.cacheRevision += 1
+                }
+                self.stripCache[name] = c
+                self.redraw?()
+            }
+        }
+    }
+
     /// Strip `k`'s cached images (1-based), if it decoded.
     func stripWorking(_ k: Int) -> WorkingImage? {
         k >= 1 && k <= project.strips.count ? stripCache[project.strips[k - 1].image]?.working : nil
@@ -399,7 +557,18 @@ final class Workspace {
         k >= 1 && k <= project.strips.count ? stripCache[project.strips[k - 1].image]?.dark : nil
     }
     func stripView(_ k: Int) -> CGImage? {
-        k >= 1 && k <= project.strips.count ? stripCache[project.strips[k - 1].image]?.view : nil
+        guard k >= 1 && k <= project.strips.count, let c = stripCache[project.strips[k - 1].image], let built = c.view else { return nil }
+        let want = project.isStrict(gel: k) ? 0 : project.strips[k - 1].rotateDeg
+        let d = want - c.rotation
+        let base = viewReduced ? c.proxy ?? built : built
+        guard abs(d) > 1e-9 else { return base }
+        let image = c.preview.image(of: base, key: "\(c.viewKey)|\(viewReduced)", degrees: d, fill: Double(c.working.figureFill))
+        return image ?? base
+    }
+    /// The angle difference being previewed on strip `k` (0 when its pixels are current), for cache keys.
+    private func stripPending(_ k: Int) -> Double {
+        guard k >= 1 && k <= project.strips.count, let c = stripCache[project.strips[k - 1].image] else { return 0 }
+        return (project.isStrict(gel: k) ? 0 : project.strips[k - 1].rotateDeg) - c.rotation
     }
     /// Every gel's working image by its number, nil for one that can't be read: no gel's picture takes another's place.
     var stripWorkingList: [WorkingImage?] { project.strips.indices.map { stripWorking($0 + 1) } }
@@ -454,6 +623,10 @@ final class Workspace {
     /// stays inside what that piece shows of its gel, so a mark never ends up where the figure doesn't draw it.
     func snapInFigure(x: Double, y: Double, free: Bool) -> (strip: Int?, y: Double, figureY: Double) {
         let g = stack
+        if g.sideBySide, let piece = g.piece(atFigureX: x, y: y) {   // side by side: the gel under the click, any gel
+            let ly = snapped(in: piece, x: x, figureY: y, free: free)
+            return (piece.strip, ly, piece.toFigure(x: 0, y: ly).y)
+        }
         guard g.hasStrips, let piece = g.piece(atFigureY: y), let k = piece.strip else {
             let sy = snappedY(x: x, y: y, free: free)
             return (nil, sy, sy)
@@ -465,7 +638,8 @@ final class Workspace {
     /// Row `fy` of the figure in a strip's own pixels, kept inside the strip, snapped to a band there.
     private func snapped(in piece: StackGeometry.Piece, x: Double, figureY fy: Double, free: Bool) -> Double {
         let local = piece.toPiece(x: x, y: min(max(fy, piece.top), piece.bottom - 1))
-        let w = (project.lanes.width > 0 ? project.lanes.width : 100) * piece.scale
+        let lw = project.lanes(ofGel: piece.strip).width, base = project.isSideBySide ? lw : project.lanes.width
+        let w = (base > 0 ? base : 100) * (project.isSideBySide ? 1 : piece.scale)
         return markRow(strip: piece.strip, x: local.x, y: local.y, laneWidth: w, free: free)
     }
 
@@ -503,7 +677,7 @@ final class Workspace {
     func stripScale(_ k: Int?) -> Double { k.map { project.effectiveAlignment($0).scale } ?? 1 }
 
     /// Where a gel sits sideways: the Shift field's number (`k` nil = the gel with the lanes, in whole pixels).
-    func gelShift(_ k: Int?) -> Double { k.map { project.effectiveAlignment($0).shift } ?? project.effectiveMainShift }
+    func gelShift(_ k: Int?) -> Double { k.map { project.effectiveAlignment($0).shift } ?? (project.isSideBySide ? 0 : project.effectiveMainShift) }
     var activeShift: Double { gelShift(activeStrip) }
 
     /// Puts gel `k` (nil = the gel with the lanes) at shift `v`: whole pixels for the lanes gel and for a gel that keeps its original
@@ -521,6 +695,7 @@ final class Workspace {
     /// Live, while a gel is dragged sideways (`k` nil = the gel with the lanes).
     func liveStripShift(_ k: Int?, _ v: Double) {
         guard k == nil || (k! >= 1 && k! <= project.strips.count) else { return }
+        if k == nil, project.isSideBySide { return }
         live("Line Up Gel") { p in Self.place(&p, gel: k, at: v) }
     }
 
@@ -532,6 +707,37 @@ final class Workspace {
         edit("Nudge Gel") { p in
             Self.place(&p, gel: k, at: (k.map { p.strips[$0 - 1].shift } ?? p.effectiveMainShift) - s * dx)
         }
+    }
+
+    /// Side by side, gel `k` lined up vertically with the gel with the lanes (the ladder bands both have, else the tops), in `p`. The
+    /// note says which. Nil for a gel that can't be read.
+    private func alignVertically(_ p: inout GelProject, gel k: Int) -> String? {
+        guard let size = gelSize(k) else { return nil }
+        let c = p.effectiveCrop(width: imageWidth, height: imageHeight)
+        return GelOps.alignVertically(&p, gel: k, mainRows: (c.y0, c.y1), gelHeight: size.height)
+    }
+
+    /// Moves the chosen gel's picture `dy` figure rows down (up when negative) against the gel with the lanes, side by side.
+    func nudgeActiveStrip(byRows dy: Double) {
+        guard let k = activeStrip, project.isSideBySide else { return }
+        let s = stripScale(k)
+        edit("Nudge Gel") { p in Self.place(&p, gel: k, at: p.strips[k - 1].shift - s * dy) }
+    }
+
+    /// Stacks the gels top to bottom or puts them side by side (undoable). Each gel keeps its lanes, ticks, names and crop; the
+    /// placement of each gel starts over, and going side by side lines them up by their ladder bands (or tops) straight away.
+    func setArrangement(_ a: Arrangement) {
+        guard a != project.arrangement else { return }
+        var notes: [String] = []
+        edit("Arrangement") { p in
+            GelOps.setArrangement(&p, a)
+            if a == .sideBySide {   // gels arrive sized and lined up
+                for k in p.strips.indices.map({ $0 + 1 }) { if let n = alignVertically(&p, gel: k) { notes.append("\(gelName(k)): \(n)") } }
+            }
+        }
+        alignNote = notes.isEmpty ? nil : notes.joined(separator: " ")
+        if lanesToolOff, tool == .lanes { tool = .select }
+        refreshCaches()
     }
 
     /// Adds a gel at the bottom of the stack, chooses it, and lines it up under the lanes if there are any yet. An image that
@@ -551,7 +757,7 @@ final class Workspace {
         activeStrip = k
         inspectorTab = .figure
         inspectorVisible = true
-        if project.lanes.centers.count >= 2 { autoAlign() } else {
+        if project.isSideBySide { autoAlign() } else if project.lanes.centers.count >= 2 { autoAlign() } else {
             alignNote = "Place the lane dividers on \(gelName(nil)), then Auto-align lines this gel up."
         }
         return k
@@ -603,6 +809,17 @@ final class Workspace {
     /// Lines every stacked gel up under the lanes, in one step. A gel whose lanes can't be found, or don't fit, is left as it
     /// is, and the note says which and why.
     func autoAlignAll() {
+        if project.isSideBySide {
+            var notes: [String] = []
+            edit("Auto-align Gels") { p in
+                for k in p.strips.indices.map({ $0 + 1 }) {
+                    guard let n = alignVertically(&p, gel: k) else { continue }
+                    notes.append("\(gelName(k)): \(n)")
+                }
+            }
+            alignNote = notes.isEmpty ? nil : notes.joined(separator: " ")
+            return
+        }
         guard project.lanes.centers.count >= 2 else { alignNote = "Place the lane dividers on \(gelName(nil)) first."; return }
         var found: [Int: StripAlign.Result] = [:], refused: [String] = [], advice: [String] = []
         for k in project.strips.indices.map({ $0 + 1 }) {
@@ -652,10 +869,16 @@ final class Workspace {
     /// there; otherwise the outcome, which says why when it found no fit (`StripAlign.refusal`), and the note about a gel
     /// that keeps its pixels and would fit better stretched (`StripAlign.fit`).
     private func alignment(_ p: GelProject, strip k: Int) -> (outcome: StripAlign.Outcome, note: String?)? {
-        guard k >= 1, k <= p.strips.count, p.lanes.centers.count >= 2,
+        guard !p.isSideBySide, k >= 1, k <= p.strips.count, p.lanes.centers.count >= 2,
               let src = stripCache[p.strips[k - 1].image]?.source else { return nil }
         let s = p.strips[k - 1]
-        let w = WorkingImage(source: src, project: p.stripProject(k))
+        // the cached working image when this gel's pixels are what it was made from, else one made as the edit will have it
+        let cached = stripCache[s.image]
+        let w = cached.flatMap { c in
+            c.rotation == (p.isStrict(gel: k) ? 0 : s.rotateDeg) && p.stripProject(k).turn == project.strips[k - 1].turn
+                && p.isStrict(gel: k) == project.isStrict(gel: k) && p.fillPadding == project.fillPadding && p.fillMode == project.fillMode
+                && p.fillValue == project.fillValue ? c.working : nil
+        } ?? WorkingImage(source: src, project: p.stripProject(k))
         return StripAlign.fit(mainCenters: p.lanes.centers, strip: w, bandsDark: s.display.bandsDark,
                               rows: s.rowRange(height: w.height), keepsOriginal: p.isStrict(gel: k), gelNumber: p.position(of: k) + 1)
     }
@@ -677,18 +900,33 @@ final class Workspace {
     /// The Shift field: the chosen gel's place sideways, the gel with the lanes' too.
     func setShift(_ v: Double) {
         let k = activeStrip
+        if k == nil, project.isSideBySide { return }   // the gel with the lanes is what the others are placed against
         edit("Line Up Gel") { p in Self.place(&p, gel: k, at: v) }
     }
 
     func setScale(_ v: Double) {
         guard let k = activeStrip, !project.isStrict(gel: k) else { return }
-        edit("Stretch Gel") { p in p.strips[k - 1].scale = min(max((v * 10000).rounded() / 10000, 0.5), 2) }
+        let side = project.isSideBySide, range = side ? GelStrip.sideScales : 0.5...2
+        let new = min(max((v * 10000).rounded() / 10000, range.lowerBound), range.upperBound)
+        edit("Stretch Gel") { p in
+            if side, let size = gelSize(k) {   // sized about the top of what the gel shows, which stays where it is
+                let old = p.effectiveAlignment(k), top = p.strips[k - 1].usedRows(height: size.height).top
+                p.strips[k - 1].shift = top - new * ((top - old.shift) / old.scale)
+            }
+            p.strips[k - 1].scale = new
+        }
     }
 
     /// Finds the active strip's lanes and lines them up under the main image's (a whole-pixel shift only while that gel keeps
     /// its original pixels). When it can't trust a fit it changes nothing, and the note says why.
     func autoAlign() {
         guard let k = activeStrip else { return }
+        if project.isSideBySide {   // vertical: the ladder bands both gels have, else the tops
+            var note: String?
+            edit("Auto-align Gel") { p in note = alignVertically(&p, gel: k) }
+            alignNote = note
+            return
+        }
         guard project.lanes.centers.count >= 2 else { alignNote = "Place the lane dividers on \(gelName(nil)) first."; return }
         let fit = alignment(project, strip: k)
         guard let r = fit?.outcome.result else { alignNote = refusalNote(fit?.outcome, strip: k); return }
@@ -742,13 +980,19 @@ final class Workspace {
         return FigureLayoutEngine.layout(project, imageWidth: imageWidth, imageHeight: imageHeight, stack: stack)
     }
 
-    var geometry: LaneGeometry? { GelOps.geometry(project, imageWidth: imageWidth, imageHeight: imageHeight) }
+    var geometry: LaneGeometry? {
+        let s = laneGelSize
+        return GelOps.geometry(project, imageWidth: s.width, imageHeight: s.height, gel: laneGel)
+    }
 
     // What the canvas shows: the stacked figure, or (a gel view of the gel with the lanes) that gel as a figure of its own,
     // its marks only, as if it were the only gel. The stacked gel on view is drawn whole (see CanvasView).
     private var lanesGelAlone: Bool { showsGel && activeStrip == nil }
     var shownStack: StackGeometry {
-        lanesGelAlone ? StackGeometry(project: project, mainWidth: imageWidth, mainHeight: imageHeight, stripSizes: []) : stack
+        guard lanesGelAlone else { return stack }
+        var alone = project
+        alone.arrangement = .topToBottom   // on its own it is a figure of its own, drawn in its own pixels
+        return StackGeometry(project: alone, mainWidth: imageWidth, mainHeight: imageHeight, stripSizes: [])
     }
     var shownLayout: FigureLayout? {
         guard lanesGelAlone else { return layout }
@@ -756,15 +1000,15 @@ final class Workspace {
     }
     var shownImage: CGImage? {
         guard lanesGelAlone, let full = displayFull else { return displayCropped }
-        let r = crop
-        return full.cropping(to: CGRect(x: r.x0, y: r.y0, width: r.width, height: r.height))
+        return cropped(full, crop)
     }
 
     /// Row `y` of gel `strip` (nil = the gel with the lanes) in its own pixels, snapped to a band at its column `x` (also its
     /// own pixels) unless snapping is off or `free`; kept inside the rows the figure shows of it.
     func snapInGel(strip: Int?, x: Double, y: Double, free: Bool) -> Double {
-        let scale = strip.map { project.effectiveAlignment($0).scale } ?? 1
-        return markRow(strip: strip, x: x, y: y, laneWidth: (project.lanes.width > 0 ? project.lanes.width : 100) * scale, free: free)
+        let scale = project.isSideBySide ? 1 : strip.map { project.effectiveAlignment($0).scale } ?? 1
+        let base = project.isSideBySide ? project.lanes(ofGel: strip).width : project.lanes.width
+        return markRow(strip: strip, x: x, y: y, laneWidth: (base > 0 ? base : 100) * scale, free: free)
     }
 
     var crop: PixelRect { project.effectiveCrop(width: imageWidth, height: imageHeight) }
@@ -772,18 +1016,36 @@ final class Workspace {
     @ObservationIgnored private var composedKey: String?
     @ObservationIgnored private var composed: CGImage?
 
+    /// `r` (in working-image pixels) of a full-frame screen image, which may be a smaller preview of one (while an angle is being made).
+    private func cropped(_ full: CGImage, _ r: PixelRect) -> CGImage? {
+        let kx = Double(full.width) / Double(max(imageWidth, 1)), ky = Double(full.height) / Double(max(imageHeight, 1))
+        let rect = kx == 1 && ky == 1 ? CGRect(x: r.x0, y: r.y0, width: r.width, height: r.height)
+            : CGRect(x: r.x0 * kx, y: r.y0 * ky, width: r.width * kx, height: r.height * ky).integral
+        // the same picture object while nothing changed: a new one is a picture the screen has to take apart again to draw
+        if let c = croppedCache, c.source === full, c.rect == rect { return c.image }
+        let out = full.cropping(to: rect)
+        croppedCache = (full, rect, out)
+        return out
+    }
+    @ObservationIgnored private var croppedCache: (source: CGImage, rect: CGRect, image: CGImage?)?
+
+    /// How many image pixels the reduced pictures take for one: the factor of the biggest gel (see `displayProxy`).
+    var reduceFactor: Double {
+        let sides = [max(imageWidth, imageHeight)] + stripSizes.compactMap { $0.map { Int(max($0.width, $0.height)) } }
+        return Double(max(1, ((sides.max() ?? 0) + RotationPreview.maxSide - 1) / RotationPreview.maxSide))
+    }
+
     /// The gel as shown in the figure on screen (cropped; strips stacked). Identical to the export unless "enhance
     /// view" is on.
     var displayCropped: CGImage? {
         guard let full = displayFull else { return nil }
         let g = stack
-        guard g.hasStrips else {
-            let r = crop
-            return full.cropping(to: CGRect(x: r.x0, y: r.y0, width: r.width, height: r.height))
-        }
-        let key = "\(viewKey ?? "")|\(project.strips.map { stripCache[$0.image]?.viewKey ?? "" })|\(g)"
+        guard g.hasStrips else { return cropped(full, crop) }
+        let turning = ([mainPending] + project.strips.indices.map { stripPending($0 + 1) }).map { String($0) }.joined(separator: ",")
+        let key = "\(viewKey ?? "")|\(project.strips.map { stripCache[$0.image]?.viewKey ?? "" })|\(turning)|\(viewReduced)|\(g)"
         if key != composedKey {
-            composed = StripStack.viewImage(views: [full] + project.strips.indices.map { stripView($0 + 1) }, stack: g)
+            composed = StripStack.viewImage(views: [full] + project.strips.indices.map { stripView($0 + 1) }, stack: g,
+                                            reduceBy: viewReduced ? reduceFactor : 1)
             composedKey = key
         }
         return composed
@@ -798,15 +1060,21 @@ final class Workspace {
     func live(_ name: String? = nil, _ change: (inout GelProject) -> Void) { document.live(name, change) }
     func endGesture(_ name: String) { document.endGesture(name, undoManager: undoManager) }
 
-    private func sync(_ p: inout GelProject) { p.syncLaneCenters(imageWidth: imageWidth, imageHeight: imageHeight) }
+    private func sync(_ p: inout GelProject) {
+        let s = laneGelSize
+        p.syncLaneCenters(imageWidth: s.width, imageHeight: s.height, gel: laneGel)
+    }
 
     // dividers
     @discardableResult
     func addDivider(x: Double, y: Double) -> UUID {
         let d = LaneDivider(x: x, dotY: y)
+        let gel = laneGel
         edit("Add Lane Divider") { p in
-            p.lanes.dividers.append(d)
-            p.lanes.dividers.sort { ($0.xTop + $0.xBottom) < ($1.xTop + $1.xBottom) }
+            var l = p.lanes(ofGel: gel)
+            l.dividers.append(d)
+            l.dividers.sort { ($0.xTop + $0.xBottom) < ($1.xTop + $1.xBottom) }
+            p.setLanes(l, ofGel: gel)
             sync(&p)
         }
         return d.id
@@ -816,10 +1084,12 @@ final class Workspace {
 
     /// Live divider drag. Dragging one end keeps the other *visible* end (at the crop's top/bottom row) in place.
     func dragDivider(_ id: UUID, from start: LaneDivider, _ drag: DividerDrag) {
-        let H = Double(imageHeight)
-        let yA = crop.y0, yB = crop.y1
+        let H = Double(laneGelSize.height)
+        let yA = laneRows.y0, yB = laneRows.y1
+        let gel = laneGel
         live("Move Lane Divider") { p in
-            guard let i = p.lanes.dividers.firstIndex(where: { $0.id == id }) else { return }
+            var l = p.lanes(ofGel: gel)
+            guard let i = l.dividers.firstIndex(where: { $0.id == id }) else { return }
             var d = start
             d.id = id
             switch drag {
@@ -830,7 +1100,8 @@ final class Workspace {
             case .bottom(let x):
                 (d.xTop, d.xBottom) = Self.line(xA: start.x(atY: yA, height: H), yA: yA, xB: x, yB: yB, height: H)
             }
-            p.lanes.dividers[i] = d
+            l.dividers[i] = d
+            p.setLanes(l, ofGel: gel)
             sync(&p)
         }
     }
@@ -842,12 +1113,23 @@ final class Workspace {
     }
 
     func deleteDivider(_ id: UUID) {
-        edit("Delete Lane Divider") { p in p.lanes.dividers.removeAll { $0.id == id }; sync(&p) }
+        let gel = laneGel
+        edit("Delete Lane Divider") { p in
+            var l = p.lanes(ofGel: gel)
+            l.dividers.removeAll { $0.id == id }
+            p.setLanes(l, ofGel: gel)
+            sync(&p)
+        }
         if selection == .divider(id) { selection = nil }
     }
 
     func clearDividers() {
-        edit("Clear Lane Dividers") { p in p.lanes.dividers.removeAll(); p.lanes.centers.removeAll() }
+        let gel = laneGel
+        edit("Clear Lane Dividers") { p in
+            var l = p.lanes(ofGel: gel)
+            l.dividers.removeAll(); l.centers.removeAll()
+            p.setLanes(l, ofGel: gel)
+        }
         selection = nil
     }
 
@@ -863,7 +1145,7 @@ final class Workspace {
     @discardableResult
     func addTick(x: Double, y rawY: Double, strip: Int? = nil) -> UUID {
         let y = clampedY(rawY, strip: strip)
-        let lane = geometry?.lane(atX: x, y: strip == nil ? y : crop.y0)
+        let lane = project.isSideBySide ? nil : geometry?.lane(atX: x, y: strip == nil ? y : crop.y0)
         let size = suggestedSize(forY: y, strip: strip)
         var newID = UUID()
         edit("Add Ladder Tick") { p in
@@ -1018,6 +1300,11 @@ final class Workspace {
     /// Live, while a tick is dragged to figure row `fy`, snapping at figure column `x`: it stays in its own piece.
     func dragTick(_ id: UUID, x: Double, figureY fy: Double, free: Bool) {
         guard let b = project.ladder?.bands.first(where: { $0.id == id }) else { return }
+        if stack.sideBySide, let piece = stack.piece(strip: b.strip) {   // snaps in that gel's own ladder lane
+            let own = project.ladderLaneX(gel: b.strip, lane: project.ladder?.lane ?? 1)
+            moveTick(id, y: snapped(in: piece, x: own.map { piece.toFigure(x: $0.x, y: 0).x } ?? x, figureY: fy, free: free))
+            return
+        }
         guard let k = b.strip else { moveTick(id, y: snappedY(x: x, y: fy, free: free)); return }
         guard let piece = stack.piece(strip: k) else { return }
         moveTick(id, y: snapped(in: piece, x: x, figureY: fy, free: free))
@@ -1039,7 +1326,8 @@ final class Workspace {
 
     /// The gel under figure row `fy`, and that row in its own pixels (kept inside the rows it shows).
     private func gelRow(atFigureY fy: Double) -> (strip: Int?, y: Double)? {
-        guard let piece = stack.piece(atFigureY: fy) else { return nil }
+        let g = stack
+        guard let piece = g.sideBySide ? g.pieces.first(where: { project.isLadderLabelGel($0.strip) }) : g.piece(atFigureY: fy) else { return nil }
         return (piece.strip, clampedY(piece.toPiece(x: 0, y: fy).y, strip: piece.strip).rounded())
     }
 
@@ -1099,6 +1387,12 @@ final class Workspace {
     /// Live, while a name is dragged to figure row `fy`, snapping at figure column `x`: it stays in its own piece.
     func dragName(_ id: UUID, x: Double, figureY fy: Double, free: Bool) {
         guard let a = project.annotations.first(where: { $0.id == id }) else { return }
+        if stack.sideBySide, let piece = stack.piece(strip: a.strip) {   // snaps in the lane of that gel next to the edge the name is on
+            let c = project.lanes(ofGel: a.strip).centers
+            let own = a.side == .left ? c.first : c.last
+            moveName(id, y: snapped(in: piece, x: own.map { piece.toFigure(x: $0, y: 0).x } ?? x, figureY: fy, free: free))
+            return
+        }
         guard let k = a.strip else { moveName(id, y: snappedY(x: x, y: fy, free: free)); return }
         guard let piece = stack.piece(strip: k) else { return }
         moveName(id, y: snapped(in: piece, x: x, figureY: fy, free: free))
@@ -1220,6 +1514,7 @@ final class Workspace {
     @ObservationIgnored private var statsCache: GelStats?
     /// The active piece's values inside what the figure shows of it, kept until its pixels or crop change.
     var gelStats: GelStats? {
+        _ = cacheRevision   // observed: the histogram follows pixels that were made in the background
         guard let w = activeWorking else { return nil }
         let c = activeStripRect ?? crop
         let pieceKey = activeStrip.map { "\($0)|\(stripCache[project.strips[$0 - 1].image]?.key ?? 0)" } ?? "main|\(imageKey ?? 0)"
@@ -1595,6 +1890,7 @@ final class Workspace {
     /// The whole figure, strips included, as it exports. A gel that can't be read is missing from it, and then the figure
     /// can't be exported (`unreadableGel`).
     var figure: StackedFigure? {
+        refreshCaches(settle: true)   // an angle still being made in the background is made now: exports are exact
         guard let working else { return nil }
         return StackedFigure(project: project, main: working, strips: stripWorkingList)
     }
@@ -1604,7 +1900,8 @@ final class Workspace {
         return ExportInfo.for(project, sourceSHA256: source?.sha256, scale: source?.scale,
                               strips: list.map { (sha256: $0?.source.sha256, scale: $0?.source.scale) },
                               size: working.map { (width: $0.width, height: $0.height) }, stripSizes: stripSizeList,
-                              convertedTo: working.flatMap { StripStack.conversion(main: $0, strips: list, project: project, stack: stack) })
+                              convertedTo: working.flatMap { StripStack.conversion(main: $0, strips: list, project: project, stack: stack) },
+                              colorGels: working.map { StripStack.colorGels(main: $0, strips: list) } ?? [:])
     }
 
     /// Why the gels that keep their original pixels can't be exported untouched (they must be stored alike), if they can't.

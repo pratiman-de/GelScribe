@@ -34,13 +34,17 @@ public struct StackGeometry: Sendable, Equatable {
         /// The piece's own first kept column and the one after its last (working-image pixels), shown from `left` to `right`.
         public var sourceLeft: Double
         public var sourceRight: Double
+        /// Side by side: x and y both scale by `scale` (`left` is `sourceLeft`'s column in the figure); y in the piece = scale x y in the
+        /// lanes gel + shift, which `sourceTop` and `top` already say.
+        public var sideBySide = false
 
         public func toPiece(x: Double, y: Double) -> (x: Double, y: Double) {
-            (scale * x + shift, sourceTop + (y - top) * scale)
+            (sideBySide ? (x - left) * scale + sourceLeft : scale * x + shift, sourceTop + (y - top) * scale)
         }
         public func toFigure(x: Double, y: Double) -> (x: Double, y: Double) {
-            ((x - shift) / scale, top + (y - sourceTop) / scale)
+            (sideBySide ? (x - sourceLeft) / scale + left : (x - shift) / scale, top + (y - sourceTop) / scale)
         }
+        public func contains(figureX x: Double) -> Bool { x >= left && x < right }
         public func contains(figureY y: Double) -> Bool { y >= top && y < bottom }
         /// The piece's own rows that are in the figure.
         public var sourceBottom: Double { sourceTop + (bottom - top) * scale }
@@ -57,6 +61,8 @@ public struct StackGeometry: Sendable, Equatable {
     public var separatorColor: SeparatorColor
 
     public var hasStrips: Bool { pieces.count > 1 }
+    /// The gels sit next to each other (left to right in `pieces`), separated by vertical lines.
+    public var sideBySide = false
 
     /// `stripSizes`: each strip's working-image size (after its turn), in strip order, and nil for a strip that isn't
     /// there (not decoded, or can't be read): it's left out of the stack but keeps its number, so no other gel moves
@@ -64,6 +70,45 @@ public struct StackGeometry: Sendable, Equatable {
     public init(project p: GelProject, mainWidth: Int, mainHeight: Int, stripSizes: [(width: Int, height: Int)?]) {
         let c = p.effectiveCrop(width: mainWidth, height: mainHeight)
         separatorColor = p.separatorColor
+        if p.isSideBySide {
+            sideBySide = true
+            // Each gel: its own kept columns (one pixel per pixel) and rows, the rows placed on the lanes gel's grid through its
+            // vertical alignment. The figure runs from the topmost to the lowest row any gel keeps; the gaps stay white.
+            func gel(_ g: Int?) -> Piece? {
+                guard let g else {
+                    return Piece(strip: nil, top: c.y0, bottom: c.y1, sourceTop: c.y0, scale: 1, shift: 0, width: mainWidth, height: mainHeight,
+                                 left: 0, right: c.x1 - c.x0, sourceLeft: c.x0, sourceRight: c.x1, sideBySide: true)
+                }
+                guard g - 1 < stripSizes.count, let size = stripSizes[g - 1] else { return nil }
+                let s = p.strips[g - 1]
+                let (shift, scale) = p.effectiveAlignment(g)
+                let rows = s.usedRows(height: size.height), cols = s.sideColumns(width: size.width)
+                // one size in both directions: the figure's grid is the lanes gel's pixels, this gel's are `scale` of them wide
+                return Piece(strip: g, top: (rows.top - shift) / scale, bottom: (rows.bottom - shift) / scale, sourceTop: rows.top,
+                             scale: scale, shift: shift, width: size.width, height: size.height,
+                             left: 0, right: (cols.right - cols.left) / scale, sourceLeft: cols.left, sourceRight: cols.right, sideBySide: true)
+            }
+            var list = p.stackOrder.compactMap(gel)
+            let widths = list.reduce(0) { $0 + ($1.right - $1.left) }
+            let gaps = Double(max(list.count - 1, 0))
+            var sep = 1
+            for _ in 0..<4 {   // the line's thickness in pixels depends on the figure's width, which it is part of
+                let ptPerPx = p.style.gelWidthIn * 72 / max(widths + gaps * Double(sep), 1)
+                sep = max(1, (p.effectiveSeparatorWidth / ptPerPx).rounded().safeInt)
+            }
+            separator = sep
+            var x = 0.0
+            for i in list.indices {
+                let w = list[i].right - list[i].left
+                list[i].left = x; list[i].right = x + w
+                x += w + Double(sep)
+            }
+            pieces = list
+            func clean(_ v: Double) -> Double { (v * 1e6).rounded() / 1e6 }   // a row that is exactly a whole number stays there
+            let y0 = list.map { clean($0.top) }.min() ?? c.y0, y1 = list.map { clean($0.bottom) }.max() ?? c.y1
+            crop = PixelRect(x0: 0, y0: y0.rounded(.down), x1: max(x - Double(sep), 1), y1: y1.rounded(.up))
+            return
+        }
         /// Strip `k` with its columns in the figure and the number of rows it takes, top unknown yet.
         func strip(_ k: Int) -> Piece? {
             guard k - 1 < stripSizes.count, let size = stripSizes[k - 1] else { return nil }
@@ -111,6 +156,13 @@ public struct StackGeometry: Sendable, Equatable {
     }
 
     public func piece(strip: Int?) -> Piece? { pieces.first { $0.strip == strip } }
+
+    /// The piece at figure point (`x`, `y`): side by side the one whose columns hold `x` (in a separator, the nearer one).
+    public func piece(atFigureX x: Double, y: Double) -> Piece? {
+        guard sideBySide else { return piece(atFigureY: y) }
+        if let p = pieces.first(where: { $0.contains(figureX: x) }) { return p }
+        return pieces.min { min(abs($0.left - x), abs($0.right - x)) < min(abs($1.left - x), abs($1.right - x)) }
+    }
 
     /// The piece whose rows hold figure row `y`; in a separator, the nearer of the two pieces.
     public func piece(atFigureY y: Double) -> Piece? {
@@ -202,9 +254,10 @@ public enum StripStack {
     /// The gel as it goes into the figure. Each gel is either one that keeps its original pixels (`isStrict(gel:)`) or not:
     /// - all keep them: every piece's original pixels on whole pixels, unscaled, in the main image's format (nil if a
     ///   gel's format differs: see `strictMismatch`);
-    /// - none do: each piece processed and mapped to 8-bit gray, strips resampled when stretched;
+    /// - none do: each piece processed and mapped to 8-bit gray (8-bit RGB for a colour gel, each channel mapped alike; when any
+    ///   gel is colour the whole stack is RGB and a gray gel goes in as R = G = B), strips resampled when stretched;
     /// - some do: the output is stored like the gels that keep their pixels (which must all match, else nil), their values
-    ///   untouched; each other gel is processed as above and then converted to that storage (gray by luminance, 8-bit values
+    ///   untouched (when a gel is colour and they are gray, RGB at their bit depth: their values copied to all three channels); each other gel is processed as above and then converted to that storage (gray by luminance, 8-bit values
     ///   times 257 for 16-bit).
     /// The separator rows are the darkest value of the storage for a black line, the brightest for white.
     /// `strips`: each gel's working image by its number, nil for one that can't be read (the list may also end early). The
@@ -216,28 +269,83 @@ public enum StripStack {
             guard let k else { return main }
             return k >= 1 && k <= strips.count ? strips[k - 1] : nil
         }
-        /// A gel processed and mapped to 8-bit gray, full frame.
-        func processed(_ k: Int?, _ w: WorkingImage) -> CGImage? {
-            w.figureImage(project: fullFrame(k.map { p.stripProject($0) } ?? p, w))
+        /// A gel processed and mapped to 8-bit gray (RGB for a colour gel), full frame.
+        func processed(_ k: Int?, _ w: WorkingImage, asGray: Bool = false) -> CGImage? {
+            w.figureImage(project: fullFrame(k.map { p.stripProject($0) } ?? p, w), asGray: asGray)
         }
         let order = stack.pieces.map(\.strip)
         let keeping = order.filter { p.isStrict(gel: $0) && working($0) != nil }
-        if keeping.isEmpty {   // none: processed and mapped to gray, full frame; then cut and placed like the strict pixels
-            return compose(stack: stack, like: nil, gray: outputIsGray(p), interpolate: { _ in true }) { piece in
+        if keeping.isEmpty {   // none: processed and mapped to gray (RGB for a colour gel), full frame; then cut and placed like the strict pixels
+            let color = order.contains { working($0)?.source.isColor == true }
+            return compose(stack: stack, like: nil, gray: outputIsGray(p) && !color, interpolate: { _ in true }) { piece in
                 working(piece.strip).flatMap { processed(piece.strip, $0) }
             }
         }
         // the storage: the gel with the lanes' when it keeps its pixels, else the topmost gel that does
         guard let reference = p.isStrict(gel: nil) ? main : working(keeping[0]) else { return nil }
-        let like = reference.source.cgImage
+        let kept = reference.source.cgImage
         for k in keeping {
-            if let w = working(k), strictMismatch(main: like, strip: w.source.cgImage) != nil { return nil }
+            if let w = working(k), strictMismatch(main: kept, strip: w.source.cgImage) != nil { return nil }
         }
+        // a colour gel anywhere makes the output RGB, a gray kept gel going in with its exact values in all three channels
+        let color = order.contains { working($0)?.source.isColor == true }
+        let grayKept = color && kept.colorSpace?.model == .monochrome
+        let like = grayKept ? (rgbReference(bits: kept.bitsPerComponent) ?? kept) : kept
         return compose(stack: stack, like: like, interpolate: { !p.isStrict(gel: $0.strip) }) { piece in
             guard let w = working(piece.strip) else { return nil }
-            if p.isStrict(gel: piece.strip) { return w.source.cgImage }
-            return processed(piece.strip, w).flatMap { stored($0, like: like) }
+            if p.isStrict(gel: piece.strip) { return grayKept ? grayCopiedToRGB(w.source.cgImage, like: like) : w.source.cgImage }
+            // stored like the gels that keep their pixels: a colour gel is only kept in colour when that storage is RGB
+            return processed(piece.strip, w, asGray: like.colorSpace?.model != .rgb).flatMap { stored($0, like: like) }
         }
+    }
+
+    /// The output's storage when a colour gel is stacked with gray gels that keep their pixels: RGB at their bit depth (16-bit when
+    /// they are, else 8-bit), or nil when `kept` isn't gray or no gel is colour.
+    static func mixedColorStorage(kept: CGImage, color: Bool) -> String? {
+        guard color, kept.colorSpace?.model == .monochrome else { return nil }
+        return kept.bitsPerComponent > 8 ? "16-bit RGB" : "8-bit RGB"
+    }
+
+    /// A 1 x 1 sRGB image of the given depth, only for the format a context is made like.
+    private static func rgbReference(bits: Int) -> CGImage? {
+        let wide = bits > 8
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB), let provider = CGDataProvider(data: Data(count: wide ? 8 : 4) as CFData) else { return nil }
+        return CGImage(width: 1, height: 1, bitsPerComponent: wide ? 16 : 8, bitsPerPixel: wide ? 64 : 32, bytesPerRow: wide ? 8 : 4, space: space,
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue | (wide ? CGBitmapInfo.byteOrder16Little.rawValue : 0)),
+                       provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+    }
+
+    /// A gray image's own values copied to red, green and blue (8-bit or 16-bit as it is). Other gray storage (fewer bits, a reversed
+    /// decode) is taken as the 8-bit values it shows. `like`: the RGB format of the output.
+    private static func grayCopiedToRGB(_ gray: CGImage, like: CGImage) -> CGImage? {
+        let w = gray.width, h = gray.height
+        var source = gray
+        let direct = (gray.bitsPerComponent == 8 || gray.bitsPerComponent == 16) && gray.bitsPerPixel % 8 == 0 && gray.decode == nil
+        if !direct {
+            guard let space = CGColorSpace(name: CGColorSpace.genericGrayGamma2_2),
+                  let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: space, bitmapInfo: CGImageAlphaInfo.none.rawValue)
+            else { return nil }
+            ctx.draw(gray, in: CGRect(x: 0, y: 0, width: w, height: h))
+            guard let flat = ctx.makeImage() else { return nil }
+            source = flat
+        }
+        guard let data = source.dataProvider?.data, let bytes = CFDataGetBytePtr(data), let space = like.colorSpace else { return nil }
+        let unit = source.bitsPerComponent / 8, step = source.bitsPerPixel / 8, rowIn = source.bytesPerRow
+        let rowOut = w * 4 * unit
+        var out = [UInt8](repeating: 255, count: rowOut * h)
+        out.withUnsafeMutableBufferPointer { o in
+            for y in 0..<h {
+                for x in 0..<w {
+                    let a = y * rowIn + x * step, b = y * rowOut + x * 4 * unit
+                    for c in 0..<3 { for k in 0..<unit { o[b + c * unit + k] = bytes[a + k] } }
+                }
+            }
+        }
+        let order = unit == 2 ? source.bitmapInfo.rawValue & CGBitmapInfo.byteOrderMask.rawValue : 0
+        guard let provider = CGDataProvider(data: Data(out) as CFData) else { return nil }
+        return CGImage(width: w, height: h, bitsPerComponent: source.bitsPerComponent, bitsPerPixel: 32 * unit, bytesPerRow: rowOut, space: space,
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue | order), provider: provider, decode: nil,
+                       shouldInterpolate: false, intent: .defaultIntent)
     }
 
     /// What a gel that doesn't keep its original pixels is converted to when it's stacked with some that do, or nil when
@@ -251,9 +359,22 @@ public enum StripStack {
             return k >= 1 && k <= strips.count ? strips[k - 1] : nil
         }
         let keeping = order.filter { p.isStrict(gel: $0) && working($0) != nil }
-        if keeping.isEmpty { return outputIsGray(p) ? "8-bit gray" : "8-bit RGB" }   // none keep theirs: see `outputIsGray`
+        if keeping.isEmpty {   // none keep theirs: see `outputIsGray`; a colour gel makes the stack RGB
+            return outputIsGray(p) && !order.contains(where: { working($0)?.source.isColor == true }) ? "8-bit gray" : "8-bit RGB"
+        }
         guard let reference = p.isStrict(gel: nil) ? main : working(keeping[0]) else { return nil }
-        return describe(reference.source.cgImage)
+        let kept = reference.source.cgImage
+        let color = order.contains { working($0)?.source.isColor == true }
+        return mixedColorStorage(kept: kept, color: color) ?? describe(kept)
+    }
+
+    /// How each colour gel was stored, by gel number (0 for the gel with the lanes, k for strip k): "8-bit RGB", "16-bit RGB".
+    /// A gray gel has no entry. For the export note (`ExportInfo.for`'s `colorGels`).
+    public static func colorGels(main: WorkingImage, strips: [WorkingImage?]) -> [Int: String] {
+        var out: [Int: String] = [:]
+        if let s = main.source.colorStorage { out[0] = s }
+        for (i, w) in strips.enumerated() { if let s = w?.source.colorStorage { out[i + 1] = s } }
+        return out
     }
 
     /// Whether a stack in which no gel keeps its original pixels is stored as 8-bit gray (else 8-bit RGB). Every gel is gray then
@@ -296,8 +417,9 @@ public enum StripStack {
 
     /// The gel for the screen: each piece's full-frame view image (brightness & contrast always applied), cut and
     /// placed as in the figure.
-    public static func viewImage(views: [CGImage?], stack: StackGeometry) -> CGImage? {
-        compose(stack: stack, like: nil, interpolate: { _ in true }) { piece in
+    /// `reduceBy` > 1 makes it that many times smaller (the gels' pictures may be reduced ones too), for drawing zoomed out.
+    public static func viewImage(views: [CGImage?], stack: StackGeometry, reduceBy: Double = 1) -> CGImage? {
+        compose(stack: stack, like: nil, interpolate: { _ in true }, scale: 1 / max(reduceBy, 1)) { piece in
             let i = piece.strip ?? 0
             return i < views.count ? views[i] : nil
         }
@@ -325,10 +447,11 @@ public enum StripStack {
     /// (a stretched gel) or placed on whole pixels. The lines between pieces are the darkest or the brightest value there is,
     /// and what no piece covers is the brightest: the context starts white, which is the storage's maximum value in any storage.
     private static func compose(stack: StackGeometry, like: CGImage?, gray: Bool = false, interpolate: (StackGeometry.Piece) -> Bool,
-                                image: (StackGeometry.Piece) -> CGImage?) -> CGImage? {
+                                scale: Double = 1, image: (StackGeometry.Piece) -> CGImage?) -> CGImage? {
         let c = stack.crop
-        let W = c.width.rounded().safeInt, H = c.height.rounded().safeInt
-        guard W > 0, H > 0, W <= FigureRenderer.maxSide, H <= FigureRenderer.maxSide, W * H <= FigureRenderer.maxPixels else { return nil }
+        let Wl = c.width.rounded().safeInt, Hl = c.height.rounded().safeInt   // in figure pixels; the picture is `scale` times that
+        let W = scale == 1 ? Wl : max(1, Int((Double(Wl) * scale).rounded())), H = scale == 1 ? Hl : max(1, Int((Double(Hl) * scale).rounded()))
+        guard W > 0, H > 0, Wl <= FigureRenderer.maxSide, Hl <= FigureRenderer.maxSide, Wl * Hl <= FigureRenderer.maxPixels else { return nil }
         let ctx: CGContext?
         if let like {
             ctx = FigureRenderer.bitmapContext(width: W, height: H, like: like)
@@ -342,24 +465,32 @@ public enum StripStack {
         ctx.setShouldAntialias(false)
         ctx.setFillColor(CGColor(gray: 1, alpha: 1))
         ctx.fill(CGRect(x: 0, y: 0, width: W, height: H))
+        if scale != 1 { ctx.scaleBy(x: Double(W) / Double(Wl), y: Double(H) / Double(Hl)) }   // from here on, figure pixels
         /// Figure columns `left`…`right` of the rows from `top` down `rows`, as a y-up device rect (the whole width by default).
         func deviceRect(top: Double, rows: Double, left: Double? = nil, right: Double? = nil) -> CGRect {
-            let a = left.map { $0 - c.x0 } ?? 0, b = right.map { $0 - c.x0 } ?? Double(W)
-            return CGRect(x: a, y: Double(H) - (top - c.y0) - rows, width: b - a, height: rows)
+            let a = left.map { $0 - c.x0 } ?? 0, b = right.map { $0 - c.x0 } ?? Double(Wl)
+            return CGRect(x: a, y: Double(Hl) - (top - c.y0) - rows, width: b - a, height: rows)
         }
         for (n, piece) in stack.pieces.enumerated() {
             if n > 0 {
                 let prev = stack.pieces[n - 1]
                 ctx.setFillColor(separatorFill(stack.separatorColor, in: ctx))
-                ctx.fill(deviceRect(top: prev.bottom, rows: piece.top - prev.bottom))
+                if stack.sideBySide {   // a vertical line the figure's whole height, between the columns
+                    ctx.fill(deviceRect(top: c.y0, rows: c.height, left: prev.right, right: piece.left))
+                } else {
+                    ctx.fill(deviceRect(top: prev.bottom, rows: piece.top - prev.bottom))
+                }
             }
             guard let img = image(piece) else { continue }
             let resample = interpolate(piece)
             ctx.interpolationQuality = resample ? .high : .none
             // the piece's own rectangle for this place: its kept columns and rows. Where the piece has no pixels (outside its
             // columns, or past its image) the figure stays as it was filled, blank white.
-            let src = CGRect(x: piece.sourceLeft, y: piece.sourceTop, width: piece.sourceRight - piece.sourceLeft,
+            var src = CGRect(x: piece.sourceLeft, y: piece.sourceTop, width: piece.sourceRight - piece.sourceLeft,
                              height: (piece.bottom - piece.top) * piece.scale)
+            // a smaller picture of the gel (a preview while its angle is being made) is cut at the same places, scaled
+            let kx = Double(img.width) / Double(max(piece.width, 1)), ky = Double(img.height) / Double(max(piece.height, 1))
+            if kx != 1 || ky != 1 { src = CGRect(x: src.minX * kx, y: src.minY * ky, width: src.width * kx, height: src.height * ky) }
             let dst = deviceRect(top: piece.top, rows: piece.bottom - piece.top, left: piece.left, right: piece.right)
             let bounds = CGRect(x: 0, y: 0, width: img.width, height: img.height)
             let part = src.intersection(bounds).integral.intersection(bounds)
@@ -465,6 +596,26 @@ public enum StripAlign {
                 dark = GrayImage(width: dark.width, height: b - a, pixels: Array(dark.pixels[(a * dark.width)..<(b * dark.width)]),
                                  sourceBits: dark.sourceBits)
             }
+        }
+        // lanes are found across the columns, so a tall picture (12 MP) is first averaged down to at most about 600 rows: the same
+        // columns, a few times quicker, and every picture of lane-finding size is left as it is
+        if dark.height > 900 {
+            let f = (dark.height + 599) / 600, h = dark.height / f, w = dark.width
+            var px = [Float](repeating: 0, count: w * h)
+            let inv = 1 / Float(f)
+            dark.pixels.withUnsafeBufferPointer { src in
+                px.withUnsafeMutableBufferPointer { dst in
+                    let base = dst.baseAddress!
+                    DispatchQueue.concurrentPerform(iterations: h) { y in
+                        for k in 0..<f {
+                            let row = (y * f + k) * w
+                            for x in 0..<w { base[y * w + x] += src[row + x] }
+                        }
+                        for x in 0..<w { base[y * w + x] *= inv }
+                    }
+                }
+            }
+            dark = GrayImage(width: w, height: h, pixels: px, sourceBits: dark.sourceBits)
         }
         let fit = Detect.lanes(in: dark, count: n)
         guard fit.centers.count == n, fit.pitch > 0 else { return nil }
@@ -629,7 +780,8 @@ public struct StackedFigure: @unchecked Sendable {   // CGImage-backed parts are
                        strips: strips.map { (sha256: $0?.source.sha256, scale: $0?.source.scale) },
                        size: (width: main.width, height: main.height),
                        stripSizes: strips.map { $0.map { (width: $0.width, height: $0.height) } },
-                       convertedTo: StripStack.conversion(main: main, strips: strips, project: project, stack: stack))
+                       convertedTo: StripStack.conversion(main: main, strips: strips, project: project, stack: stack),
+                       colorGels: StripStack.colorGels(main: main, strips: strips))
     }
 
     /// PDF, PNG, TIFF or SVG. PNG and TIFF at `dpi` when it differs from native (nil: the project's own setting).

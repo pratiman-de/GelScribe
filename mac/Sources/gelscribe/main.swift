@@ -11,7 +11,11 @@ let usageText = """
 usage:
   gelscribe new IMAGE [-o OUT.gelscribe]      make a project around an image (original copied byte-for-byte); never over an existing one
   gelscribe render PROJECT [-o STEM] [--formats pdf,png,tiff,svg] [--dpi N|native]   (other than native resamples the gel)
-  gelscribe edit PROJECT [--dividers X,X,…] [--auto-lanes N] [--labels "µM: ladder|0{L|P}|50{L|P}|…"]
+  gelscribe edit PROJECT [--arrangement top-to-bottom|side-by-side]   how the gels sit: stacked (the default) or left to right
+                                      in stack order, each gel with its own lanes (--gel N --dividers / --auto-lanes set gel N's),
+                                      lanes numbered across the figure; --align auto, --shift and --scale then act vertically.
+                                      Changing it starts each gel's shift and scale over (0 and 1): line the gels up again
+                [--dividers X,X,…] [--auto-lanes N] [--labels "µM: ladder|0{L|P}|50{L|P}|…"]
                 [--row-name µM] [--preset ID] [--system GEL] [--ticks Y,Y,…] [--no-snap] [--name TEXT@Y[:arrow|tick|bracket|none]]…
                 [--title T] [--crop X0,Y0,X1,Y1|fit]   with --gel N: that gel's own crop (columns and rows in its own pixels)
                 [--strict on|off]   keep original pixels: for the gel with the lanes, or for gel N with --gel N (each gel has its own;
@@ -30,7 +34,10 @@ usage:
                                       ticks and names go with it, and no other gel moves); with --gel N, where gel N sits
                 [--gel N [--rows Y0,Y1] [--scale S] [--align auto]]   gel N, counted from the top: its rows, and lining
                                       its lanes up wherever the gel with the lanes sits; --crop, --shift, --ticks, --name, --rotate,
-                                      --turn and --strict then apply to it
+                                      --turn and --strict then apply to it. Side by side, --scale sizes the gel (one size both ways,
+                                      0.01 to 100) and --align auto sizes it by the ladder bands both gels have, else to the same
+                                      height as the gel with the lanes (a gel that keeps its original pixels is only lined up by the tops);
+                                      gels are sized like that when added side by side and when this arrangement is chosen
                 [--own-ladder on|off]   the gel's ladder sizes start again from the top instead of carrying on from the
                                       gel above (the gel with the lanes, or gel N with --gel N)
                 [--file-names on|off]   whether exported files carry each gel's file name (off: the SHA-256 fingerprints stay)
@@ -276,6 +283,7 @@ func runEdit(_ words: [String]) throws {
     let removeText = a.option("--remove-gel")
     let orderText = a.option("--order")
     let gelText = a.option("--gel")
+    let arrangementText = a.option("--arrangement")
     let turnText = a.option("--turn")
     let rowsText = a.option("--rows")
     let shiftText = a.option("--shift")
@@ -371,11 +379,18 @@ func runEdit(_ words: [String]) throws {
         return v
     }
     let stretch = scaleText.map { t -> Double in
-        let v = number(t, "--scale wants a number from 0.5 to 2, e.g. 1.02")
-        guard (0.5...2).contains(v) else { fail("--scale wants a number from 0.5 to 2, e.g. 1.02") }
+        let v = number(t, "--scale wants a number from 0.5 to 2, e.g. 1.02 (side by side 0.01 to 100)")
+        guard (GelStrip.sideScales).contains(v) else { fail("--scale wants a number from 0.5 to 2, e.g. 1.02 (side by side 0.01 to 100)") }
         return v
     }
     if let t = alignText, t.lowercased() != "auto" { fail("--align wants auto") }
+    let arrangement = arrangementText.map { t -> Arrangement in
+        switch t.lowercased() {
+        case "top-to-bottom": .topToBottom
+        case "side-by-side": .sideBySide
+        default: fail("--arrangement wants top-to-bottom or side-by-side")
+        }
+    }
     let align = alignText != nil
     for f in newGels { requireFile(f, "image") }
     if let from = schemeFrom { requireFile(from, "project") }
@@ -390,6 +405,7 @@ func runEdit(_ words: [String]) throws {
         let u = URL(fileURLWithPath: f)
         try pkg.addStrip(imageData: Data(contentsOf: u), imageName: u.lastPathComponent)
     }
+    if let arrangement { GelOps.setArrangement(&pkg.project, arrangement) }
     /// Gel `n`, counted from the top, as a strip number; nil = the gel with the lanes.
     func gel(_ n: Int) -> Int? {
         let stack = pkg.project.stackOrder
@@ -444,6 +460,17 @@ func runEdit(_ words: [String]) throws {
         }
     }
     func allStripSizes() throws -> [(width: Int, height: Int)] { try pkg.project.strips.indices.map { try stripSize($0 + 1) } }
+    // side by side, gels arrive sized and placed: all of them when the arrangement was just chosen, else the ones just added
+    // (--shift, --scale and --align below still have the last word)
+    if pkg.project.isSideBySide, arrangement != nil || !newGels.isEmpty {
+        let added = Set(newGels.map { URL(fileURLWithPath: $0).lastPathComponent })
+        let size = try mainSize()
+        let c = pkg.project.effectiveCrop(width: size.width, height: size.height)
+        for k in pkg.project.strips.indices.map({ $0 + 1 }) where arrangement != nil || added.contains(pkg.project.strips[k - 1].image) {
+            let note = GelOps.alignVertically(&pkg.project, gel: k, mainRows: (c.y0, c.y1), gelHeight: try stripSize(k).height) ?? ""
+            say("gel \(pkg.project.position(of: k) + 1): \(note)")
+        }
+    }
 
     if let separatorColor { pkg.project.separatorColor = separatorColor }
     if let separatorWidth { pkg.project.separatorWidth = separatorWidth }
@@ -481,9 +508,11 @@ func runEdit(_ words: [String]) throws {
             guard !pkg.project.isStrict(gel: k) || stretch == 1 else {
                 fail("--scale needs --strict off for this gel (--strict off --gel \(gelN ?? 0)): stretching resamples the gel")
             }
+            guard pkg.project.isSideBySide || (0.5...2).contains(stretch) else { fail("--scale wants a number from 0.5 to 2, e.g. 1.02") }
             pkg.project.strips[k - 1].scale = stretch
         }
     }
+    if shift != nil, strip == nil, pkg.project.isSideBySide { fail("gel \(gelN.map(String.init) ?? "1") has the lanes the other gels are placed against, so it stays put; give --shift a --gel N for another gel") }
     if let shift, strip == nil { pkg.project.mainShift = shift.rounded() }   // the gel with the lanes, whole pixels
     if let fillMode {
         pkg.project.fillMode = fillMode
@@ -498,13 +527,16 @@ func runEdit(_ words: [String]) throws {
         let (W, H) = try mainSize()
         pkg.project.crop = PixelRect(x0: v[0], y0: v[1], x1: v[2], y1: v[3]).normalized(width: W, height: H)
     }
+    // side by side every gel has its own lanes: --gel N says whose (in that gel's own pixels); otherwise they are the lanes gel's
+    let laneGel = pkg.project.isSideBySide ? strip : nil
     if let xs = dividerXs {
-        let (W, H) = try mainSize()
+        let (W, H) = try laneGel.map(stripSize) ?? mainSize()
         for x in xs where x < 0 || x > Double(W) { fail("--dividers wants positions inside the gel, from 0 to \(W)") }
-        GelOps.setDividers(&pkg.project, xs: xs, imageWidth: W, imageHeight: H)
+        GelOps.setDividers(&pkg.project, xs: xs, imageWidth: W, imageHeight: H, gel: laneGel)
     } else if let n = laneCount {
-        let work = WorkingImage(source: try mainImage(), project: pkg.project)
-        if GelOps.autoDividers(&pkg.project, work, count: n).centers.count < 2 {
+        let work = try laneGel.map { WorkingImage(source: try pkg.decodeStrip($0), project: pkg.project.stripProject($0)) }
+            ?? WorkingImage(source: try mainImage(), project: pkg.project)
+        if GelOps.autoDividers(&pkg.project, work, count: n, gel: laneGel).centers.count < 2 {
             warn("couldn't find \(n) lanes; place them with --dividers")
         }
     }
@@ -537,7 +569,13 @@ func runEdit(_ words: [String]) throws {
         stripWorkCache = w
         return w
     }
-    if align, let k = strip, let n = gelN {
+    if align, pkg.project.isSideBySide, let k = strip, let n = gelN {   // vertical: the ladder bands both gels have, else the tops
+        let size = try mainSize(), sh = try stripSize(k).height
+        let c = pkg.project.effectiveCrop(width: size.width, height: size.height)
+        let note = GelOps.alignVertically(&pkg.project, gel: k, mainRows: (c.y0, c.y1), gelHeight: sh) ?? ""
+        let f = FigureLayoutEngine.formatSize
+        say("gel \(n): shift \(f(pkg.project.strips[k - 1].shift)) px, scale \(f(pkg.project.strips[k - 1].scale)) (vertical). \(note)")
+    } else if align, let k = strip, let n = gelN {
         let sw = try stripWorking(k)
         guard pkg.project.lanes.centers.count >= 2 else { fail("couldn't line gel \(n) up: place the lane dividers first, then try again") }
         let s = pkg.project.strips[k - 1]
@@ -574,10 +612,15 @@ func runEdit(_ words: [String]) throws {
         let (W, H) = try mainSize()
         let lane = pkg.project.ladder?.lane ?? 1
         let centers = pkg.project.lanes.centers
-        let canSnap = snap && lane >= 1 && lane <= centers.count
+        let sideLane = pkg.project.isSideBySide ? pkg.project.ladderLaneX(gel: strip, lane: lane) : nil
+        let canSnap = snap && (pkg.project.isSideBySide ? sideLane != nil : lane >= 1 && lane <= centers.count)
         if snap && !canSnap { warn("no lanes yet, so the ticks weren't snapped to bands") }
         var dark: GrayImage?, cx = 0.0, laneWidth = pkg.project.lanes.width
-        if canSnap {
+        if canSnap, let sideLane {   // side by side: that gel's own ladder lane, in its own pixels
+            cx = sideLane.x; laneWidth = sideLane.width
+            if let k = strip { dark = try stripWorking(k).darkness(bandsDark: pkg.project.strips[k - 1].display.bandsDark) }
+            else { dark = WorkingImage(source: try mainImage(), project: pkg.project).darkness(bandsDark: pkg.project.display.bandsDark) }
+        } else if canSnap {
             if let k = strip {
                 let sw = try stripWorking(k)
                 dark = sw.darkness(bandsDark: pkg.project.strips[k - 1].display.bandsDark)
@@ -631,7 +674,7 @@ func runEdit(_ words: [String]) throws {
     // (a main image whose size can't be read has nothing to sync to; no option that needs the size got this far without it)
     if let size = try? mainSize() { pkg.project.syncLaneCenters(imageWidth: size.width, imageHeight: size.height) }
 
-    let changed = [dividersText, autoLanesText, labelsText, rowName, labelAngleText, groupAngleText, presetID, systemKey, ticksText, titleText, cropText,
+    let changed = [arrangementText, dividersText, autoLanesText, labelsText, rowName, labelAngleText, groupAngleText, presetID, systemKey, ticksText, titleText, cropText,
                    strictText, separatorText, separatorWidthText, schemeFrom, rotateText, fillText, removeText, orderText, turnText, rowsText, shiftText, scaleText,
                    alignText, ownLadderText, fileNamesText].contains { $0 != nil } || !nameTexts.isEmpty || !newGels.isEmpty
     if changed {

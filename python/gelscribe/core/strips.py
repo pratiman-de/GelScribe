@@ -21,7 +21,7 @@ from scipy import ndimage
 from . import detect
 from .image import ImageError, SourceImage, WorkingImage, render_gray
 from .layout import FigureLayout, layout
-from .model import GelProject, PixelRect, format_size, separator_gray, separator_rgb, sround
+from .model import SIDE_SCALES, GelProject, PixelRect, format_size, separator_gray, separator_rgb, sround
 
 
 @dataclass
@@ -45,15 +45,23 @@ class Piece:
     #: its own first kept column and the one after its last (working-image pixels), shown from left to right
     source_left: float = 0.0
     source_right: float = 0.0
+    #: side by side: x and y both scale by scale (left is source_left's column in the figure); y in the gel = scale × y in the
+    #: lanes gel + shift, which source_top and top already say
+    side_by_side: bool = False
 
     def to_piece(self, x: float, y: float) -> tuple[float, float]:
-        return self.scale * x + self.shift, self.source_top + (y - self.top) * self.scale
+        sx = (x - self.left) * self.scale + self.source_left if self.side_by_side else self.scale * x + self.shift
+        return sx, self.source_top + (y - self.top) * self.scale
 
     def to_figure(self, x: float, y: float) -> tuple[float, float]:
-        return (x - self.shift) / self.scale, self.top + (y - self.source_top) / self.scale
+        fx = (x - self.source_left) / self.scale + self.left if self.side_by_side else (x - self.shift) / self.scale
+        return fx, self.top + (y - self.source_top) / self.scale
 
     def contains(self, fy: float) -> bool:
         return self.top <= fy < self.bottom
+
+    def contains_x(self, fx: float) -> bool:
+        return self.left <= fx < self.right
 
     @property
     def source_bottom(self) -> float:
@@ -72,6 +80,11 @@ class StackGeometry:
         #: the line's colour: "black" is the darkest value of the output's storage and "white" the brightest; a colour is its
         #: own numbers in an RGB storage and its luminance in a gray one
         self.separator_colour = p.separator
+        #: the gels sit next to each other (left to right in pieces), separated by vertical lines
+        self.side_by_side = p.is_side_by_side
+        if self.side_by_side:
+            self._side_by_side(p, c, main_w, main_h, strip_sizes)
+            return
 
         def strip(k: int) -> Optional[Piece]:
             if k - 1 >= len(strip_sizes) or strip_sizes[k - 1] is None:
@@ -124,9 +137,54 @@ class StackGeometry:
         #: and the other gels' crops through their alignment), and from the top of the topmost gel to the bottom of the lowest
         self.crop = PixelRect(x0, y0, x1, y)
 
+    def _side_by_side(self, p: GelProject, c: PixelRect, main_w: int, main_h: int, strip_sizes) -> None:
+        # Each gel: its own kept columns (one pixel per pixel) and rows, the rows placed on the lanes gel's grid through its
+        # vertical alignment. The figure runs from the topmost to the lowest row any gel keeps; the gaps stay white.
+        def gel(g: Optional[int]) -> Optional[Piece]:
+            if g is None:
+                return Piece(None, c.y0, c.y1, c.y0, 1.0, 0.0, main_w, main_h, 0.0, c.x1 - c.x0, c.x0, c.x1, True)
+            if g - 1 >= len(strip_sizes) or strip_sizes[g - 1] is None:
+                return None
+            s, (w, h) = p.strips[g - 1], strip_sizes[g - 1]
+            shift, scale = p.effective_alignment(g)
+            a, b = s.used_rows(h)
+            l, r = s.side_columns(w)
+            # one size in both directions: the figure's grid is the lanes gel's pixels, this gel's are scale of them wide
+            return Piece(g, (a - shift) / scale, (b - shift) / scale, a, scale, shift, w, h, 0.0, (r - l) / scale, l, r, True)
+
+        lst = [q for q in (gel(g) for g in p.stack_order) if q is not None]
+        widths = sum(q.right - q.left for q in lst)
+        gaps = float(max(len(lst) - 1, 0))
+        sep = 1
+        for _ in range(4):   # the line's thickness in pixels depends on the figure's width, which it is part of
+            pt_per_px = p.style.gel_width_in * 72 / max(widths + gaps * sep, 1)
+            sep = max(1, int(sround(p.effective_separator_width / pt_per_px)))
+        self.separator = sep
+        x = 0.0
+        for q in lst:
+            w = q.right - q.left
+            q.left, q.right = x, x + w
+            x += w + sep
+        self.pieces = lst
+
+        def clean(v: float) -> float:
+            return sround(v * 1e6) / 1e6   # a row that is exactly a whole number stays there
+        y0 = min((clean(q.top) for q in lst), default=c.y0)
+        y1 = max((clean(q.bottom) for q in lst), default=c.y1)
+        self.crop = PixelRect(0.0, float(math.floor(y0)), max(x - sep, 1.0), float(math.ceil(y1)))
+
     @property
     def has_strips(self) -> bool:
         return len(self.pieces) > 1
+
+    def piece_at_figure_x(self, x: float, y: float) -> Optional[Piece]:
+        """The gel at figure point (x, y): side by side the one whose columns hold x (in a separator, the nearer one)."""
+        if not self.side_by_side:
+            return self.piece_at_figure_y(y)
+        for q in self.pieces:
+            if q.contains_x(x):
+                return q
+        return min(self.pieces, key=lambda q: min(abs(q.left - x), abs(q.right - x)), default=None)
 
     def piece(self, strip: Optional[int]) -> Optional[Piece]:
         return next((q for q in self.pieces if q.strip == strip), None)
@@ -230,27 +288,66 @@ def keeps_original(p: GelProject) -> list[bool]:
     return [p.is_strict(None)] + [p.is_strict(k) for k in range(1, len(p.strips) + 1)]
 
 
-def output_is_gray(p: GelProject) -> bool:
-    """Whether a stack in which no gel keeps its original pixels is stored as 8-bit gray (else 8-bit RGB). Every gel is gray
-    then (a gel that doesn't keep its pixels is mapped to 8-bit gray, whatever it was scanned as), so only the colour of the
-    line between gels decides: a gray line (black, white, or a color with red = green = blue) fits a gray figure, any
+def output_is_gray(p: GelProject, sources: Optional[list] = None) -> bool:
+    """Whether a stack in which no gel keeps its original pixels is stored as 8-bit gray (else 8-bit RGB). A gel that doesn't
+    keep its pixels stays in colour if it is a colour image, so any colour gel in the stack makes the composite RGB (gray
+    gels go in as red = green = blue); sources: each gel's image, the one with the lanes first. Otherwise only the colour of
+    the line between gels decides: a gray line (black, white, or a color with red = green = blue) fits a gray figure, any
     other colour needs RGB to be kept exactly."""
+    if sources and any(s is not None and s.channels == 3 for s in sources):
+        return False
     r, g, b = separator_rgb(p.separator)
     return r == g == b
 
 
+def _any_color(p: GelProject, sources: list[Optional[SourceImage]], keeps: list[bool]) -> bool:
+    """Whether a gel that doesn't keep its original pixels is a colour image (so the figure has to be RGB)."""
+    return any(not keeps[i] and s is not None and s.channels == 3 for i, s in enumerate(sources[:len(keeps)]))
+
+
 def converted_storage(p: GelProject, sources: list[Optional[SourceImage]]) -> Optional[str]:
-    """What the gels that don't keep their original pixels are converted to in a stacked figure, for its note. When some
-    gels keep theirs, the format the figure is stored in: that of the first gel that keeps them ("16-bit gray"). When none
-    does, 8-bit gray, or 8-bit RGB when the line between gels is a colour (output_is_gray). None when every gel keeps its
-    pixels, or without a stack. sources: each gel's image, the one with the lanes first."""
+    """What the gels that don't keep their original pixels are converted to, for the note. In a stacked figure when some
+    gels keep theirs, the format the figure is stored in: that of the first gel that keeps them ("16-bit gray"), as RGB
+    when a gel that doesn't is a colour image. When none does, 8-bit gray, or 8-bit RGB when a gel is in colour or the line
+    between gels is a colour (output_is_gray). None when every gel keeps its pixels. Without a stack: "8-bit RGB" for an
+    adjusted colour image that was not 8-bit RGB already, else None. sources: each gel's image, the one with the lanes
+    first."""
     keeps = keeps_original(p)
-    if not p.strips or all(keeps):
+    if not p.strips:
+        s = sources[0] if sources else None
+        if keeps[0] or s is None or s.channels != 3 or (s.pixels.dtype == np.uint8):
+            return None
+        return "8-bit RGB"
+    if all(keeps):
         return None
     if not any(keeps):
-        return "8-bit gray" if output_is_gray(p) else "8-bit RGB"
+        return "8-bit gray" if output_is_gray(p, sources) else "8-bit RGB"
     src = sources[keeps.index(True)] if keeps.index(True) < len(sources) else None
-    return _describe(src.pixels) if src is not None else None
+    if src is None:
+        return None
+    desc = _describe(src.pixels)
+    if src.channels == 1 and _any_color(p, sources, keeps):
+        desc = desc.replace("gray", "RGB")
+    return desc
+
+
+def unconverted_gels(p: GelProject, sources: list[Optional[SourceImage]]) -> list[int]:
+    """The gels (0 the one with the lanes, then the stacked ones in strips order) that are adjusted but were 8-bit RGB
+    already when the figure is stored as 8-bit RGB: nothing was converted, so the note says nothing of it."""
+    if converted_storage(p, sources) != "8-bit RGB":
+        return []
+    keeps = keeps_original(p)
+    return [i for i, s in enumerate(sources[:len(keeps)]) if not keeps[i] and s is not None and s.channels == 3
+            and s.pixels.dtype == np.uint8]
+
+
+def copied_gels(p: GelProject, sources: list[Optional[SourceImage]]) -> list[int]:
+    """The gels (0 the one with the lanes, then the stacked ones) that keep their original pixels but are gray in a figure
+    that is RGB because another gel is in colour: their exact values go into all three channels, at their own bit depth."""
+    keeps = keeps_original(p)
+    if not p.strips or not any(s is not None and s.channels == 3 for s in sources):
+        return []
+    return [i for i, s in enumerate(sources[:len(keeps)]) if keeps[i] and s is not None and s.channels == 1]
 
 
 def _white(dtype) -> float:
@@ -281,12 +378,18 @@ def _compose(stack: StackGeometry, image_for: Callable[[Piece], Optional[np.ndar
     for n, q in enumerate(stack.pieces):
         if n > 0:
             prev = stack.pieces[n - 1]
-            out[int(sround(prev.bottom - c.y0)):int(sround(q.top - c.y0))] = line
+            if stack.side_by_side:   # a vertical line the figure's whole height, between the columns
+                out[:, max(0, int(sround(prev.right - c.x0))):max(0, int(sround(q.left - c.x0)))] = line
+            else:
+                out[int(sround(prev.bottom - c.y0)):int(sround(q.top - c.y0))] = line
         img = image_for(q)
         if img is None:
             continue
         if rgb and img.ndim == 2:
             img = np.repeat(img[..., None], 3, axis=2)
+        if stack.side_by_side:
+            _place_side(out, c, q, img, interpolate(q))
+            continue
         dst = int(sround(q.top - c.y0))
         rows = int(sround(q.bottom - q.top))
         h, w = img.shape[:2]
@@ -314,6 +417,41 @@ def _compose(stack: StackGeometry, image_for: Callable[[Piece], Optional[np.ndar
             v = np.clip(np.floor(v + 0.5), 0, _white(dtype))
         region[ok] = v[ok].astype(dtype)
     return out
+
+
+def _place_side(out: np.ndarray, c: PixelRect, q: Piece, img: np.ndarray, resample: bool) -> None:
+    """Side by side: the gel's kept columns and rows into their place, one size in both directions. Whole pixels when it is
+    placed at size 1 on whole rows (its own values); otherwise each output pixel's centre looked up in the gel (bilinear)."""
+    H, W = out.shape[:2]
+    h, w = img.shape[:2]
+    x0 = max(0, int(sround(q.left - c.x0)))
+    x1 = min(W, int(sround(q.right - c.x0)))
+    y0 = max(0, int(sround(q.top - c.y0)))
+    y1 = min(H, int(sround(q.bottom - c.y0)))
+    if x1 <= x0 or y1 <= y0:
+        return
+    if not resample or (q.scale == 1 and float(q.top).is_integer() and float(q.left).is_integer() and float(q.source_top).is_integer()):
+        sx = int(sround(q.source_left - q.left + c.x0))   # source column = figure column + sx
+        sy = int(sround(q.source_top - q.top + c.y0))     # source row = figure row + sy
+        a0, a1 = max(x0, -sx), min(x1, w - sx)
+        b0, b1 = max(y0, -sy), min(y1, h - sy)
+        if a1 > a0 and b1 > b0:
+            out[b0:b1, a0:a1] = img[b0 + sy:b1 + sy, a0 + sx:a1 + sx]
+        return
+    yc = c.y0 + np.arange(y0, y1) + 0.5   # the pixel centres in figure rows and columns
+    xc = c.x0 + np.arange(x0, x1) + 0.5
+    py = q.source_top + (yc - q.top) * q.scale - 0.5
+    px = q.source_left + (xc - q.left) * q.scale - 0.5
+    yy, xx = np.meshgrid(py, px, indexing="ij")
+    ok = (xx >= -0.5) & (xx <= w - 0.5) & (yy >= -0.5) & (yy <= h - 0.5) & ((yc >= q.top) & (yc < q.bottom))[:, None] \
+        & ((xc >= q.left) & (xc < q.right))[None, :]
+    planes = [img] if img.ndim == 2 else [img[..., ch] for ch in range(img.shape[2])]
+    sampled = [ndimage.map_coordinates(pl.astype(np.float32), [yy, xx], order=1, mode="nearest") for pl in planes]
+    v = sampled[0] if img.ndim == 2 else np.stack(sampled, axis=-1)
+    if out.dtype != np.float32:
+        v = np.clip(np.floor(v + 0.5), 0, _white(out.dtype))
+    region = out[y0:y1, x0:x1]
+    region[ok] = v[ok].astype(out.dtype)
 
 
 def _stored_as(gray8: np.ndarray, dtype) -> np.ndarray:
@@ -344,15 +482,17 @@ def figure_image(main: WorkingImage, strips: list[WorkingImage], p: GelProject, 
         if strict_problem_for(main.source, [w.source for w in strips], str, keeps):
             return None
         ref = gels[keeps.index(True)].source.pixels
-        dtype, rgb = ref.dtype, ref.ndim == 3
+        # a colour gel that doesn't keep its pixels makes the figure RGB too; gray ones go in as red = green = blue
+        dtype, rgb = ref.dtype, ref.ndim == 3 or _any_color(p, [w.source for w in gels], keeps)
     else:
-        dtype, rgb = np.uint8, not output_is_gray(p)   # none keeps its pixels: 8-bit gray, or RGB for a coloured line
+        # none keeps its pixels: 8-bit gray, or RGB for a colour gel or a coloured line
+        dtype, rgb = np.uint8, not output_is_gray(p, [w.source for w in gels])
 
     def pixels(i: int) -> np.ndarray:
         if keeps[i]:
             return gels[i].source.pixels
         shown = p.effective_display if i == 0 else p.strip_project(i).effective_display
-        return _stored_as(render_gray(gels[i]._processed(), shown), dtype)
+        return _stored_as(render_gray(gels[i].levels(color=gels[i].source.channels == 3), shown), dtype)
     images = [pixels(i) for i in range(len(gels))]
     return _compose(stack, lambda q: images[q.strip or 0] if (q.strip or 0) < len(images) else None, dtype, rgb,
                     lambda q: not keeps[q.strip or 0])
@@ -526,6 +666,72 @@ def align_gel(p: GelProject, k: int, w: WorkingImage) -> tuple[AlignResult, Opti
     return r, note
 
 
+class Vertical(NamedTuple):
+    """What lining a gel up vertically with the gel with the lanes found (side by side)."""
+    shift: float
+    scale: float
+    #: matching ladder bands used, 0 when the tops were lined up instead
+    bands: int
+    #: the worst distance, in the gel's own pixels, between a band and where the fit puts it
+    worst: float
+    note: str
+
+
+def vertical_fit(p: GelProject, k: int, main_rows: tuple[float, float], gel_rows: tuple[float, float],
+                 keeps_original: bool) -> Vertical:
+    """y in gel k = scale × y in the lanes gel + shift (the one size in both directions), by least squares on the ticks that
+    have the same size on both gels (at least 2; a size that is on more than one tick of a gel is left out). keeps_original:
+    whole-pixel shift and scale 1. Without enough matches the gel is sized to the lanes gel's kept height with the tops
+    lined up (main_rows, gel_rows: each gel's kept rows in its own pixels); a gel that keeps its original pixels is only
+    lined up by the tops, and told how far off the heights are."""
+    def ticks(g: Optional[int]) -> dict[float, float]:   # size -> y, for sizes on one tick only
+        seen: dict[float, list[float]] = {}
+        if p.ladder is not None:
+            for b in p.ladder.bands:
+                if b.strip == g and not b.ignore and math.isfinite(b.y) and b.size is not None and math.isfinite(b.size) \
+                        and p.is_in_figure(g, b.y):
+                    seen.setdefault(b.size, []).append(b.y)
+        return {s: ys[0] for s, ys in seen.items() if len(ys) == 1}
+    a, b = ticks(None), ticks(k)
+    pairs = [(a[s], b[s]) for s in sorted(a) if s in b]
+    if len(pairs) < 2:
+        main_h, gel_h = max(main_rows[1] - main_rows[0], 1.0), max(gel_rows[1] - gel_rows[0], 1.0)
+        lanes_gel, this_gel = p.position_of(None) + 1, p.position_of(k) + 1
+        if keeps_original:
+            note = "No matching ladder bands on both gels; tops lined up."
+            if abs(gel_h - main_h) >= 1:
+                note = (f"No matching ladder bands; tops lined up. Gel {this_gel} is {format_size(gel_h)} px tall and Gel {lanes_gel} "
+                        f"{format_size(main_h)} px ({abs(gel_h / main_h - 1) * 100:.0f}% different). Turn off Keep original pixels "
+                        f"for Gel {this_gel} to size it to the same height.")
+            else:
+                note += " Place ladder ticks on both to line them up by size."
+            return Vertical(sround(gel_rows[0] - main_rows[0]), 1.0, 0, 0.0, note)
+        scale = min(max(gel_h / main_h, SIDE_SCALES[0]), SIDE_SCALES[1])
+        return Vertical(gel_rows[0] - scale * main_rows[0], scale, 0, 0.0,
+                        f"No matching ladder bands; sized to the same height as Gel {lanes_gel} and tops lined up.")
+    n = float(len(pairs))
+    def total(values) -> float:   # plain left-to-right addition, as the Mac's reduce (sum() adds with compensation)
+        t = 0.0
+        for v in values:
+            t += v
+        return t
+    mx, my = total(x for x, _ in pairs) / n, total(y for _, y in pairs) / n
+    sxx = total((x - mx) * (x - mx) for x, _ in pairs)
+    sxy = total((x - mx) * (y - my) for x, y in pairs)
+    scale = sxy / sxx if sxx > 0 else 1.0
+    if not (math.isfinite(scale) and scale > 0):
+        scale = 1.0
+    scale = min(max(scale, SIDE_SCALES[0]), SIDE_SCALES[1])
+    shift = my - scale * mx
+    if keeps_original:
+        scale, shift = 1.0, sround(my - mx)
+    worst = max(abs(y - (scale * x + shift)) for x, y in pairs)
+    note = f"Lined up on {len(pairs)} ladder bands, within {worst:.1f} px"
+    if not keeps_original:
+        note += f"; stretched {abs(scale - 1) * 100:.1f}%"
+    return Vertical(shift, scale, len(pairs), worst, note + ".")
+
+
 # ---------------------------------------------------------------------------------------------------- the whole figure
 
 
@@ -594,12 +800,14 @@ class StackedFigure:
         from . import render
         if self.unreadable:
             raise ImageError(self.unreadable)
-        storage = converted_storage(self.project, [self.main.source] + [w.source for w in self.strips])
+        sources = [self.main.source] + [w.source for w in self.strips]
+        storage = converted_storage(self.project, sources)
         return render.export_info(self.project, self.main.source.sha256, resampled_dpi,
                                   render.native_dpi(self.layout) if resampled_dpi else None, self.main.source.scale,
                                   [(w.source.sha256, w.source.scale, (w.width, w.height)) for w in self.strips],
                                   (self.main.width, self.main.height), storage,
-                                  self.changed_warnings(self.project.export_file_names))
+                                  self.changed_warnings(self.project.export_file_names), unconverted_gels(self.project, sources),
+                                  copied_gels(self.project, sources))
 
     def export(self, fmt: str, dpi: Optional[float] = None) -> bytes:
         """pdf, png, tiff or svg; PNG and TIFF at dpi when it differs from native (None: the project's own setting)."""

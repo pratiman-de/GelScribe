@@ -230,10 +230,10 @@ def test_only_the_gels_that_keep_their_pixels_have_to_be_stored_alike():
     assert problem() == "gel 3 is 8-bit RGB, gel 2 8-bit gray"
     p.strips[0].strict = False
     assert problem() is None   # one gel on its own has nothing to match
-    w = working(pkg)   # and all of them off: 8-bit gray, as the non-strict export always was
+    w = working(pkg)   # and all of them off: a colour gel keeps the composite in colour (gray gels as red = green = blue)
     p.strips[1].strict = False
     gel = stacked.figure_image(w[0], w[1], p, stack(pkg, w))
-    assert gel.dtype == np.uint8 and gel.ndim == 2
+    assert gel.dtype == np.uint8 and gel.ndim == 3
 
 
 def test_auto_align_follows_each_gels_own_setting_and_says_when_stretching_would_fit_better():

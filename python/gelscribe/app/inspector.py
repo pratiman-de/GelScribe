@@ -228,10 +228,11 @@ class LabelsPanel(Panel):
         self.lane_count.setStyleSheet("font-weight: 700; font-size: 15px;")
         self.add(self.lane_count)
         self.outer = QCheckBox("Count the edges as lanes")
-        self.outer.toggled.connect(lambda v: ws.set_outer_lanes(v) if v != ws.project.lanes.outer_lanes else None)
+        self.outer.toggled.connect(lambda v: ws.set_outer_lanes(v) if v != ws.lane_set.outer_lanes else None)
         self.add(self.outer)
         self.clear = button("Clear dividers", ws.clear_dividers)
-        self.add(hrow(button("Lane tool", lambda: ws.set_tool("lanes")), "stretch", self.clear))
+        self.lane_tool = button("Lane tool", lambda: ws.set_tool("lanes"))
+        self.add(hrow(self.lane_tool, "stretch", self.clear))
         self.gap()
         self.add(section("Quick labels"))
         self.quick = QPlainTextEdit()
@@ -347,12 +348,18 @@ class LabelsPanel(Panel):
     def refresh(self):
         ws, p = self.ws, self.ws.project
         n = p.lane_count
+        side = p.is_side_by_side
+        dividers = sum(len(p.lanes_of(g).dividers) for g in p.stack_order) if side else len(p.lanes.dividers)
         self.lane_count.setText(f"{n} lanes   <span style='color:{theme.C['dim']};font-weight:400;font-size:13px'>from "
-                                f"{len(p.lanes.dividers)} dividers</span>")
+                                f"{dividers} dividers</span>")
         self.outer.blockSignals(True)
-        self.outer.setChecked(p.lanes.outer_lanes)
+        self.outer.setChecked(ws.lane_set.outer_lanes)
         self.outer.blockSignals(False)
-        self.clear.setEnabled(bool(p.lanes.dividers))
+        self.outer.setToolTip("The strips before the first and after the last divider are lanes too"
+                              + (" (for the gel on view)" if side else ""))
+        self.lane_tool.setToolTip(ws.lanes_tool_note if side else "")
+        self.clear.setToolTip("Clears the dividers of the gel on view (the gel with the lanes in the figure)" if side else "")
+        self.clear.setEnabled(bool(ws.lane_set.dividers))
         if not self.quick.hasFocus() and not ws.typing_quick:
             ws.quick_labels = ql.shorthand(p)
         self.quick.blockSignals(True)
@@ -804,6 +811,12 @@ class GelsSection(QWidget):
                                         if abs(v - ws.project.effective_separator_width) > 1e-9 else None)
         self.match = button("Match lines", lambda: ws.set_separator_width(None),
                             tip="Make the line as thick as the figure's other lines again (Lines, under Layout), and follow them")
+        self.arrangement = Segmented([("top_to_bottom", "Top to bottom"), ("side_by_side", "Side by side")])
+        self.arrangement.chosen.connect(lambda a: ws.set_arrangement(a))
+        self.arrangement_row = hrow(QLabel("Arrangement"), self.arrangement, "stretch")
+        self.arrangement_row.setToolTip("Stack the gels, or put them next to each other, left to right in this order, each with "
+                                        "its own lanes. Lanes are numbered across all of them. Each gel's shift and stretch "
+                                        "start over when this changes.")
         self.line_row = QWidget()
         lv = QVBoxLayout(self.line_row)
         lv.setContentsMargins(0, 0, 0, 0)
@@ -819,9 +832,11 @@ class GelsSection(QWidget):
         self.own_caption = label(OWN_LADDER_HELP, "caption")
         self.file = label("", "caption")
         self.auto = button("Auto-align", ws.auto_align, tip="Finds this gel's lanes and lines them up under the lane dividers")
-        self.align_row = hrow(self.auto, "stretch",
-                              button("←", lambda: ws.nudge_active_gel(-1), tip="Move the gel 1 px left (← with nothing selected; Shift for 10 px)"),
-                              button("→", lambda: ws.nudge_active_gel(1), tip="Move the gel 1 px right (→ with nothing selected; Shift for 10 px)"))
+        self.back = button("←", lambda: ws.nudge_active_gel_rows(-1) if ws.project.is_side_by_side else ws.nudge_active_gel(-1),
+                           tip="Move the gel 1 px left (← with nothing selected; Shift for 10 px)")
+        self.forth = button("→", lambda: ws.nudge_active_gel_rows(1) if ws.project.is_side_by_side else ws.nudge_active_gel(1),
+                            tip="Move the gel 1 px right (→ with nothing selected; Shift for 10 px)")
+        self.align_row = hrow(self.auto, "stretch", self.back, self.forth)
         self.shift = QDoubleSpinBox()
         self.shift.setRange(-100000, 100000)
         self.shift.setDecimals(2)
@@ -831,19 +846,20 @@ class GelsSection(QWidget):
                               "takes its lane dividers, labels, ticks and names with it.")
         self.shift.editingFinished.connect(lambda: self._set_shift())
         self.stretch = QDoubleSpinBox()
-        self.stretch.setRange(-50, 100)
+        self.stretch.setRange(-99, 9900)
         self.stretch.setDecimals(2)
         self.stretch.setSuffix(" %")
         self.stretch.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.NoButtons)
         self.stretch.setToolTip("How much wider this gel's lanes are than the gel with the lanes, in percent")
         self.stretch.editingFinished.connect(lambda: self._set_stretch())
-        self.fields = hrow(QLabel("Shift"), self.shift, "stretch", QLabel("Stretch"), self.stretch)
+        self.shift_label = QLabel("Shift")
+        self.fields = hrow(self.shift_label, self.shift, "stretch", QLabel("Stretch"), self.stretch)
         self.note = label("", "caption")
         self.strict_note = label("This gel keeps original pixels, so Stretch is off: it only shifts by whole pixels. "
                                  "Turn off Keep original pixels (Original image, above) to stretch it.", "caption")
         self.align_all = hrow(button("Auto-align All", ws.auto_align_all,
                                      tip="Lines every other gel up under this gel's lane dividers"), "stretch")
-        for w in (self.single, self.single_caption, self.list, self.buttons, self.list_caption, self.line_row, self.problem, self.own,
+        for w in (self.single, self.single_caption, self.list, self.buttons, self.arrangement_row, self.list_caption, self.line_row, self.problem, self.own,
                   self.own_caption, self.file, self.align_row, self.fields, self.align_all, self.note, self.strict_note):
             v.addWidget(w)
         self._rows = None
@@ -879,8 +895,10 @@ class GelsSection(QWidget):
         several = bool(p.strips)
         for w in (self.single, self.single_caption):
             w.setVisible(not several)
-        for w in (self.list, self.buttons, self.list_caption, self.line_row, self.own, self.own_caption):
+        for w in (self.list, self.buttons, self.arrangement_row, self.list_caption, self.line_row, self.own, self.own_caption):
             w.setVisible(several)
+        side = p.is_side_by_side
+        self.arrangement.set(p.arrangement)
         self.line.set(p.separator if p.separator in ("black", "white") else "")
         if not self.hex.hasFocus():
             self.hex.setText(self._hex_of(p.separator))
@@ -922,10 +940,25 @@ class GelsSection(QWidget):
         chosen = k is not None
         self.file.setVisible(chosen)
         for w in (self.align_row, self.fields):   # the gel with the lanes moves too (its dividers, labels, ticks and names with it)
-            w.setVisible(True)
+            w.setVisible(chosen or not side)   # side by side it is what the others are placed against, so it stays put
         self.auto.setVisible(chosen)
         self.align_all.setVisible(not chosen)
         self.strict_note.setVisible(chosen and p.is_strict(k))
+        self.back.setText("↑" if side else "←")
+        self.forth.setText("↓" if side else "→")
+        self.back.setToolTip("Move the gel 1 px up (↑ with nothing selected; Shift for 10 px)" if side else
+                             "Move the gel 1 px left (← with nothing selected; Shift for 10 px)")
+        self.forth.setToolTip("Move the gel 1 px down (↓ with nothing selected; Shift for 10 px)" if side else
+                              "Move the gel 1 px right (→ with nothing selected; Shift for 10 px)")
+        self.auto.setToolTip("Lines this gel up vertically with the gel with the lanes: by the ladder bands both have, else by their tops"
+                             if side else "Finds this gel's lanes and lines them up under the lane dividers")
+        self.align_all.setToolTip("Lines every other gel up vertically with this gel, by the ladder bands both have, else by their tops"
+                                  if side else "Lines every other gel up under this gel's lane dividers")
+        self.shift_label.setText("Shift up/down" if side else "Shift")
+        self.shift.setToolTip("y in this gel = stretch × y in the gel with the lanes + shift. A positive shift moves the gel up. "
+                              "No other gel moves." if side else
+                              "x in this gel = stretch × x in the figure + shift. No other gel moves; the gel with the lanes "
+                              "takes its lane dividers, labels, ticks and names with it.")
         shift, scale = (p.effective_alignment(k) if chosen else (p.effective_main_shift, 1.0))
         self.shift.blockSignals(True)
         self.shift.setDecimals(2 if chosen and not p.is_strict(k) else 0)   # whole pixels for a gel that keeps its pixels
@@ -936,13 +969,19 @@ class GelsSection(QWidget):
                 f.setValue(v)
                 f.blockSignals(False)
         self.stretch.setEnabled(chosen and not p.is_strict(k))
-        self.stretch.setToolTip("How much wider this gel's lanes are than the gel with the lanes, in percent" if chosen else
+        self.stretch.setToolTip(("How much taller this gel is stretched than the gel with the lanes, in percent" if side else
+                                 "How much wider this gel's lanes are than the gel with the lanes, in percent") if chosen else
                                 "Stretch is for the other gels: the gel with the lanes is the one they line up with")
         if chosen:
             w, h = ws.active_size
             self.file.setText(f"{p.strips[k - 1].image} · {w} × {h} px" if w else f"{p.strips[k - 1].image}")
-            self.note.setText(ws.align_note or "Drag the gel sideways in the figure (Select tool), or Auto-align, until "
-                                               "its lanes sit between the dividers.")
+            self.note.setText(ws.align_note or (
+                "Drag the gel up or down in the figure (Select tool), or Auto-align, until its bands line up with the other "
+                "gels'. Its lane dividers are set in its own view." if side else
+                "Drag the gel sideways in the figure (Select tool), or Auto-align, until its lanes sit between the dividers."))
+        elif side:
+            self.note.setText(ws.align_note or "Every other gel is placed up or down against this one. Choose a gel to line it up; "
+                                               "set each gel's lane dividers in its own view (double-click a gel).")
         else:
             self.note.setText(ws.align_note or "This gel's lane dividers are the ones every gel uses. Drag any gel sideways in "
                                                "the figure (Select tool) to line the edges up, or choose another gel to line "
@@ -1102,9 +1141,16 @@ class FigurePanel(Panel):
         self.angle.setDecimals(2)
         self.angle.setSuffix("°")
         self.angle.setToolTip("↑ ↓ turn 0.1°. Positive turns counter-clockwise.")
-        self.angle.editingFinished.connect(lambda: ws.set_rotation(self.angle.value())
-                                           if abs(self.angle.value() - ws.active_rotation) > 1e-9 else None)
+        # live: the picture turns at once (the last exact one, turned), the exact pixels come when you stop
+        self.angle.valueChanged.connect(lambda v: ws.live_rotation(v) if abs(v - ws.active_rotation) > 1e-9 else None)
+        self.angle.editingFinished.connect(lambda: ws.end_rotation())
         self.add(hrow(QLabel("Angle"), "stretch", self.angle))
+        self.angle_slider = QSlider(Qt.Orientation.Horizontal)
+        self.angle_slider.setRange(-100, 100)   # tenths of a degree, -10 to 10
+        self.angle_slider.setToolTip("Drag to turn: the picture follows at once, the exact pixels are made when you let go.")
+        self.angle_slider.valueChanged.connect(lambda v: ws.live_rotation(v / 10) if abs(v / 10 - ws.active_rotation) > 1e-9 else None)
+        self.angle_slider.sliderReleased.connect(lambda: ws.end_rotation())
+        self.add(self.angle_slider)
         self.rot_caption = label("Off while this gel keeps its original pixels: rotating resamples it. Straighten asks "
                                  "before turning that off.", "caption")
         self.add(self.rot_caption)
@@ -1287,6 +1333,11 @@ class FigurePanel(Panel):
             self.angle.setValue(0 if strict else ws.active_rotation)
         self.angle.blockSignals(False)
         self.angle.setEnabled(not strict)
+        self.angle_slider.blockSignals(True)
+        if not self.angle_slider.isSliderDown():
+            self.angle_slider.setValue(0 if strict else round(ws.active_rotation * 10))
+        self.angle_slider.blockSignals(False)
+        self.angle_slider.setEnabled(not strict)
         self.reset_rot.setEnabled(not strict and ws.active_rotation != 0)
         self.rot_caption.setVisible(strict)
         self.fill.set(p.fill_mode)

@@ -194,12 +194,15 @@ public enum FigureLayoutEngine {
         func X(_ px: Double) -> Double { (px - crop.x0) * s }
         func Y(_ py: Double) -> Double { (py - crop.y0) * s }
         let centers = p.lanes.centers
+        // side by side: one row of lanes across every gel, numbered from the left
+        let across = stack?.sideBySide == true ? stack.map { p.figureLanes(stack: $0) } : nil
         func laneX(_ n: Int) -> Double? {
+            if let across { return n >= 1 && n <= across.centers.count ? across.centers[n - 1].map(X) : nil }
             guard n >= 1, n <= centers.count else { return nil }
             let c = centers[n - 1]
             return (c >= crop.x0 && c <= crop.x1) ? X(c) : nil
         }
-        let laneHalf = p.lanes.width * s / 2
+        let laneHalf = (across?.width ?? p.lanes.width) * s / 2
 
         func text(_ str: String, _ f: FontSpec, at o: CGPoint, align: TextAlign, rotation: Double = 0,
                   role: FigureRole, anchor: TextAnchor = .bottom) -> FigureText {
@@ -347,7 +350,7 @@ public enum FigureLayoutEngine {
             let dir: Double = right ? 1 : -1
             let marks = ladder.bands.enumerated()
                 .compactMap { e -> (offset: Int, element: LadderBand, fy: Double)? in
-                    guard !e.element.ignore, e.element.size != nil, let fy = figureY(e.element.strip, e.element.y) else { return nil }
+                    guard !e.element.ignore, e.element.size != nil, p.isLadderLabelGel(e.element.strip), let fy = figureY(e.element.strip, e.element.y) else { return nil }
                     return (e.offset, e.element, fy)
                 }
                 .sorted { $0.fy < $1.fy }

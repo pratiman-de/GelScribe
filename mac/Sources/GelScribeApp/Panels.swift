@@ -346,18 +346,29 @@ struct LabelsPanel: View {
         PanelSection(title: "Lanes") {
             HStack {
                 Text("\(p.laneCount) lanes").font(.title3.weight(.semibold).monospacedDigit())
-                Text("from \(p.lanes.dividers.count) divider\(p.lanes.dividers.count == 1 ? "" : "s")").foregroundStyle(.secondary)
+                let dividers = p.isSideBySide ? p.stackOrder.reduce(0) { $0 + p.lanes(ofGel: $1).dividers.count } : p.lanes.dividers.count
+                Text("from \(dividers) divider\(dividers == 1 ? "" : "s")").foregroundStyle(.secondary)
                 Spacer()
             }
             Toggle("Count the edges as lanes", isOn: Binding(
-                get: { document.project.lanes.outerLanes },
-                set: { v in ws.edit("Outer Lanes") { $0.lanes.outerLanes = v; $0.syncLaneCenters(imageWidth: ws.imageWidth, imageHeight: ws.imageHeight) } }))
-                .help("The strips before the first and after the last divider are lanes too")
+                get: { ws.laneSet.outerLanes },
+                set: { v in
+                    let gel = ws.laneGel, size = ws.laneGelSize
+                    ws.edit("Outer Lanes") {
+                        var l = $0.lanes(ofGel: gel)
+                        l.outerLanes = v
+                        $0.setLanes(l, ofGel: gel)
+                        $0.syncLaneCenters(imageWidth: size.width, imageHeight: size.height, gel: gel)
+                    }
+                }))
+                .help("The strips before the first and after the last divider are lanes too" + (p.isSideBySide ? " (for the gel on view)" : ""))
             HStack {
                 Button("Lane tool") { ws.tool = .lanes }
+                    .help(p.isSideBySide ? ws.lanesToolNote : "")
                 Spacer()
                 Button("Clear dividers", role: .destructive) { ws.clearDividers() }
-                    .disabled(p.lanes.dividers.isEmpty)
+                    .disabled(ws.laneSet.dividers.isEmpty)
+                    .help(p.isSideBySide ? "Clears the dividers of the gel on view (the gel with the lanes in the figure)" : "")
             }
             .controlSize(.small)
         }
@@ -1063,6 +1074,17 @@ struct GelsPanel: View {
                     }
                 }
                 let place = p.position(of: ws.activeStrip), last = order.count - 1
+                HStack(spacing: 8) {
+                    Text("Arrangement").font(.callout)
+                    Picker("Arrangement", selection: Binding(get: { p.arrangement }, set: { ws.setArrangement($0) })) {
+                        Text("Top to bottom").tag(Arrangement.topToBottom)
+                        Text("Side by side").tag(Arrangement.sideBySide)
+                    }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize()
+                    Spacer(minLength: 0)
+                }
+                .controlSize(.small)
+                .help("Stack the gels, or put them next to each other, left to right in this order, each with its own lanes. Lanes are numbered across all of them. Each gel's shift and stretch start over when this changes.")
                 HStack {
                     Button("Add Gel…") { ws.chooseGelImages() }
                         .help("More gels, or the other pieces of a cut membrane, at the bottom of the stack")
@@ -1123,6 +1145,15 @@ struct GelsPanel: View {
                     .font(.caption).foregroundStyle(.secondary)
                 if let k = ws.activeStrip, k <= p.strips.count {
                     alignment(p, k)
+                } else if p.isSideBySide {
+                    HStack {
+                        Button("Auto-align All") { ws.autoAlignAll() }
+                            .help("Lines every other gel up vertically with this gel, by the ladder bands both have, else by their tops")
+                        Spacer()
+                    }
+                    .controlSize(.small)
+                    Text(ws.alignNote ?? "Every other gel is placed up or down against this one. Choose a gel to line it up; set each gel's lane dividers in its own view (double-click a gel).")
+                        .font(.caption).foregroundStyle(.secondary)
                 } else {
                     HStack {
                         Button("Auto-align All") { ws.autoAlignAll() }
@@ -1158,23 +1189,26 @@ struct GelsPanel: View {
             Text("\(p.strips[k - 1].image) · \(size.width) × \(size.height) px")
                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
         }
+        let side = p.isSideBySide
         HStack {
             Button("Auto-align") { ws.autoAlign() }
-                .help("Finds this gel's lanes and lines them up under the lane dividers")
+                .help(side ? "Lines this gel up vertically with the gel with the lanes: by the ladder bands both have, else by their tops"
+                      : "Finds this gel's lanes and lines them up under the lane dividers")
             Spacer()
-            Button { ws.nudgeActiveStrip(by: -1) } label: { Image(systemName: "arrow.left") }
-                .help("Move the gel 1 px left (← with nothing selected; ⇧ for 10 px)")
-            Button { ws.nudgeActiveStrip(by: 1) } label: { Image(systemName: "arrow.right") }
-                .help("Move the gel 1 px right (→ with nothing selected; ⇧ for 10 px)")
+            Button { side ? ws.nudgeActiveStrip(byRows: -1) : ws.nudgeActiveStrip(by: -1) } label: { Image(systemName: side ? "arrow.up" : "arrow.left") }
+                .help(side ? "Move the gel 1 px up (↑ with nothing selected; ⇧ for 10 px)" : "Move the gel 1 px left (← with nothing selected; ⇧ for 10 px)")
+            Button { side ? ws.nudgeActiveStrip(byRows: 1) : ws.nudgeActiveStrip(by: 1) } label: { Image(systemName: side ? "arrow.down" : "arrow.right") }
+                .help(side ? "Move the gel 1 px down (↓ with nothing selected; ⇧ for 10 px)" : "Move the gel 1 px right (→ with nothing selected; ⇧ for 10 px)")
         }
         .controlSize(.small)
         HStack(spacing: 6) {
             let a = p.effectiveAlignment(k)
-            Text("Shift")
+            Text(side ? "Shift up/down" : "Shift")
             TextField("", value: Binding(get: { a.shift }, set: { ws.setShift($0) }),
                       format: .number.precision(.fractionLength(0...2)))
                 .frame(width: 64).multilineTextAlignment(.trailing)
-                .help("x in this gel = stretch × x in the figure + shift. No other gel moves.")
+                .help(side ? "y in this gel = stretch × y in the gel with the lanes + shift. A positive shift moves the gel up. No other gel moves."
+                      : "x in this gel = stretch × x in the figure + shift. No other gel moves.")
             Text("px").foregroundStyle(.secondary)
             Spacer()
             Text("Stretch")
@@ -1182,10 +1216,12 @@ struct GelsPanel: View {
                       format: .number.precision(.fractionLength(0...2)))
                 .frame(width: 52).multilineTextAlignment(.trailing)
                 .disabled(ws.activeStrict)
-                .help("How much wider this gel's lanes are than \(ws.gelName(nil))'s, in percent")
+                .help(side ? "How much taller this gel is stretched than \(ws.gelName(nil)), in percent"
+                      : "How much wider this gel's lanes are than \(ws.gelName(nil))'s, in percent")
             Text("%").foregroundStyle(.secondary)
         }
-        Text(ws.alignNote ?? "Drag the gel sideways in the figure (Select tool), or Auto-align, until its lanes sit between the dividers.")
+        Text(ws.alignNote ?? (side ? "Drag the gel up or down in the figure (Select tool), or Auto-align, until its bands line up with the other gels'. Its lane dividers are set in its own view."
+                              : "Drag the gel sideways in the figure (Select tool), or Auto-align, until its lanes sit between the dividers."))
             .font(.caption).foregroundStyle(.secondary)
         if ws.activeStrict {
             Text("Stretch needs Keep original pixels off for this gel: stretching resamples it.")

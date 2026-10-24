@@ -40,6 +40,10 @@ public struct GelProject: Codable, Equatable, Sendable {
     /// another gel), stacked top to bottom in this order with a line between each. This image's lanes and labels are
     /// shared; each of these has its own pixels, ticks and names.
     public var strips: [GelStrip] = []
+    /// How the gels sit in the figure: stacked top to bottom (the default, left out of the file) or side by side, left to right in
+    /// stack order (JSON `"arrangement": "side_by_side"`), each gel with its own lanes and a vertical placement against the gel
+    /// with the lanes (`GelStrip.shift` and `scale` then act vertically). See `isSideBySide`.
+    public var arrangement: Arrangement = .topToBottom
     /// Where this image, the gel whose lanes every gel shares, sits among `strips`, counted from the top: 0 = above
     /// all of them.
     public var mainPosition: Int = 0
@@ -101,7 +105,7 @@ public struct GelProject: Codable, Equatable, Sendable {
         case fillPadding = "fill_padding"
         case rotateDeg = "rotate_deg"
         case fillMode = "fill_mode", fillValue = "fill_value", viewEnhance = "view_enhance"
-        case turn, strips
+        case turn, strips, arrangement
         case mainPosition = "main_position", mainShift = "main_shift", ownLadder = "own_ladder"
         case separator
         case separatorWidth = "separator_width"
@@ -128,6 +132,7 @@ public struct GelProject: Codable, Equatable, Sendable {
         style = try c.decodeIfPresent(FigureStyle.self, forKey: .style) ?? .init()
         turn = ((try c.decodeIfPresent(Int.self, forKey: .turn) ?? 0) % 4 + 4) % 4
         strips = try c.decodeIfPresent([GelStrip].self, forKey: .strips) ?? []
+        arrangement = (try? c.decodeIfPresent(Arrangement.self, forKey: .arrangement)) ?? .topToBottom
         mainPosition = try c.decodeIfPresent(Int.self, forKey: .mainPosition) ?? 0
         mainShift = try c.decodeIfPresent(Double.self, forKey: .mainShift) ?? 0
         ownLadder = try c.decodeIfPresent(Bool.self, forKey: .ownLadder) ?? false
@@ -157,6 +162,7 @@ public struct GelProject: Codable, Equatable, Sendable {
         try c.encode(style, forKey: .style)
         if turn != 0 { try c.encode(turn, forKey: .turn) }
         if !strips.isEmpty { try c.encode(strips, forKey: .strips) }
+        if arrangement != .topToBottom { try c.encode(arrangement, forKey: .arrangement) }
         if mainSlot != 0 { try c.encode(mainSlot, forKey: .mainPosition) }
         if mainShift != 0 { try c.encode(mainShift, forKey: .mainShift) }
         if ownLadder { try c.encode(true, forKey: .ownLadder) }
@@ -165,7 +171,8 @@ public struct GelProject: Codable, Equatable, Sendable {
         if !exportFileNames { try c.encode(false, forKey: .exportFileNames) }
     }
 
-    public var laneCount: Int { lanes.centers.count }
+    /// The lanes in the figure: the lanes gel's, or side by side all gels' together, numbered continuously from the left.
+    public var laneCount: Int { isSideBySide ? stackOrder.reduce(0) { $0 + lanes(ofGel: $1).centers.count } : lanes.centers.count }
 
     /// What actually applies to pixels, after strict mode has had its say.
     public var effectiveRotation: Double { strict ? 0 : rotateDeg }
@@ -402,12 +409,15 @@ public struct LaneGeometry: Sendable {
 
 extension GelProject {
     /// Recomputes `lanes.centers` (at the gel's top edge) and `lanes.width` from the dividers. Call after any divider edit.
-    public mutating func syncLaneCenters(imageWidth: Int, imageHeight: Int) {
-        guard let g = LaneGeometry.resolve(lanes, imageWidth: Double(imageWidth), imageHeight: Double(imageHeight)) else { return }
-        let top = effectiveCrop(width: imageWidth, height: imageHeight).y0
-        lanes.centers = (0..<g.count).map { ((g.center($0 + 1, atY: top)) * 10).rounded() / 10 }
+    /// `gel`: a strip's number works on that gel's own lanes (side by side) at the top of its kept rows.
+    public mutating func syncLaneCenters(imageWidth: Int, imageHeight: Int, gel: Int? = nil) {
+        var l = lanes(ofGel: gel)
+        guard let g = LaneGeometry.resolve(l, imageWidth: Double(imageWidth), imageHeight: Double(imageHeight)) else { return }
+        let top = gel.map { strips[$0 - 1].usedRows(height: imageHeight).top } ?? effectiveCrop(width: imageWidth, height: imageHeight).y0
+        l.centers = (0..<g.count).map { ((g.center($0 + 1, atY: top)) * 10).rounded() / 10 }
         let widths = (0..<g.count).map { g.x(g.boundaries[$0 + 1], atY: top) - g.x(g.boundaries[$0], atY: top) }.sorted()
-        if !widths.isEmpty { lanes.width = (widths[widths.count / 2] * 0.85).rounded() }
+        if !widths.isEmpty { l.width = (widths[widths.count / 2] * 0.85).rounded() }
+        setLanes(l, ofGel: gel)
     }
 }
 
@@ -598,12 +608,20 @@ public struct LadderBand: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
+/// How the gels of a figure sit: stacked, or next to each other.
+public enum Arrangement: String, Codable, Sendable, CaseIterable {
+    case topToBottom = "top_to_bottom"
+    case sideBySide = "side_by_side"
+}
+
 /// Another gel in the figure, scanned on its own: a piece of a membrane cut to probe different antibodies, or the same
 /// samples run on another gel. It's stacked with the project's image, a line between them so the figure shows they
 /// were imaged separately. Lanes and lane labels are the project image's; this gel is lined up under them with `shift`
 /// (and, when Strict is off, `scale`). Its ticks and names are in the project's ladder and annotations, marked with
 /// its number in `strips`.
 public struct GelStrip: Codable, Equatable, Sendable, Identifiable {
+    /// The sizes a gel may be given against the gel with the lanes when the gels sit side by side (`scale`).
+    public static let sideScales = 0.01...100.0
     public var id = UUID()
     /// File name of the piece's image inside the package, copied byte-for-byte like the main image.
     public var image: String
@@ -629,6 +647,9 @@ public struct GelStrip: Codable, Equatable, Sendable, Identifiable {
     /// contrast on screen only), false stretches, rotates and applies its brightness & contrast to what's exported.
     /// nil = the same as the gel with the lanes (`GelProject.isStrict(gel:)`), which is how older projects read.
     public var strict: Bool?
+    /// This gel's own lanes, in its own pixels, used when the gels sit side by side (JSON `"lanes"`, left out when it has none). Kept
+    /// in the file, unused, while the gels are stacked top to bottom.
+    public var lanes: Lanes?
 
     public init(image: String, imageSHA256: String? = nil, turn: Int = 0, rotateDeg: Double = 0,
                 display: DisplaySettings = .init(), top: Double? = nil, bottom: Double? = nil, left: Double? = nil, right: Double? = nil,
@@ -640,7 +661,7 @@ public struct GelStrip: Codable, Equatable, Sendable, Identifiable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case image, turn, display, top, bottom, left, right, shift, scale, strict
+        case image, turn, display, top, bottom, left, right, shift, scale, strict, lanes
         case imageSHA256 = "image_sha256", rotateDeg = "rotate_deg", ownLadder = "own_ladder"
     }
     public init(from decoder: Decoder) throws {
@@ -658,6 +679,7 @@ public struct GelStrip: Codable, Equatable, Sendable, Identifiable {
         scale = try c.decodeIfPresent(Double.self, forKey: .scale) ?? 1
         ownLadder = try c.decodeIfPresent(Bool.self, forKey: .ownLadder) ?? false
         strict = try c.decodeIfPresent(Bool.self, forKey: .strict)
+        lanes = try c.decodeIfPresent(Lanes.self, forKey: .lanes)
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -674,12 +696,13 @@ public struct GelStrip: Codable, Equatable, Sendable, Identifiable {
         try c.encode(scale, forKey: .scale)
         if ownLadder { try c.encode(true, forKey: .ownLadder) }
         try c.encodeIfPresent(strict, forKey: .strict)
+        try c.encodeIfPresent(lanes, forKey: .lanes)
     }
     public static func == (a: GelStrip, b: GelStrip) -> Bool {
         a.image == b.image && a.imageSHA256 == b.imageSHA256 && a.turn == b.turn && a.rotateDeg == b.rotateDeg &&
             a.display == b.display && a.top == b.top && a.bottom == b.bottom && a.left == b.left && a.right == b.right &&
             a.shift == b.shift && a.scale == b.scale &&
-            a.ownLadder == b.ownLadder && a.strict == b.strict
+            a.ownLadder == b.ownLadder && a.strict == b.strict && a.lanes == b.lanes
     }
 }
 
@@ -715,6 +738,7 @@ extension GelProject {
 
     /// Whether gel `strip` (nil = the one with the lanes) is marked as having its own ladder.
     public func hasOwnLadder(_ strip: Int?) -> Bool {
+        if isSideBySide { return true }   // every gel next to another has a ladder of its own
         guard let k = strip else { return ownLadder }
         return k >= 1 && k <= strips.count && strips[k - 1].ownLadder
     }
@@ -841,7 +865,8 @@ extension GelProject {
         let s = strips[k - 1]
         // numbers that aren't sane never reach the stacking: no shift, no stretch
         let shift = s.shift.isFinite ? min(max(s.shift, -Sane.coordinate), Sane.coordinate) : 0
-        let scale = s.scale.isFinite && s.scale > 0 ? min(max(s.scale, 0.5), 2) : 1
+        let range = isSideBySide ? GelStrip.sideScales : 0.5...2   // side by side a photo and a small scan can differ a lot in size
+        let scale = s.scale.isFinite && s.scale > 0 ? min(max(s.scale, range.lowerBound), range.upperBound) : 1
         return isStrict(gel: k) ? (shift.rounded(), 1) : (shift, scale)
     }
 }

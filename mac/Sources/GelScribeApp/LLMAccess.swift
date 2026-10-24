@@ -61,7 +61,7 @@ final class AppProjectHost: ProjectHost {
             }
             throw GelServiceError("no open project \(id); call list_projects or open_project")
         }
-        ws.refreshCaches()
+        ws.refreshCaches(settle: true)
         guard var work = ws.working else { throw GelServiceError("that window has no image yet") }
         // a cut membrane's other pieces, for exports and previews, each by its own number: a gel that can't be read is
         // said, never left out (the gels under it would shift into its place)

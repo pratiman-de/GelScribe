@@ -465,14 +465,16 @@ private func figure(_ pkg: GelPackage) throws -> (fig: StackedFigure, w: (main: 
         let got16 = out.region(x: 0, y: Int(piece.top - c.y0), w: Int(c.width), h: 100, channels: 1)
         #expect(out.region(x: 0, y: Int(piece.top - c.y0), w: Int(c.width), h: 100, channels: 1) == wanted)
         #expect(fig.info().description.contains("converted to 16-bit gray (values times 257)"))
-        // a color gel that doesn't keep its pixels is turned to gray by luminance (a flat color: one value everywhere)
+        // a color gel that doesn't keep its pixels makes the output RGB at the kept gel's depth (a flat color: one value everywhere);
+        // the gray gel's values are copied to all three channels
         pkg = try twoGels(top: storedPNG(width: 620, height: 160, wide: true), strip: storedPNG(width: 700, height: 220, color: (200, 100, 50)), keepStrip: false)
         (fig, w) = try figure(pkg)
         gel = try #require(fig.gel)
         out = RawPixels(gel)
-        let luminance = Int((w.strips[0].analysis.pixels[100 * 700 + 300] * 255).rounded()) * 257
-        let seen = Int(out.region(x: 300, y: Int(fig.stack.piece(strip: 1)!.top - fig.stack.crop.y0) + 50, w: 1, h: 1, channels: 1)[0])
-        #expect(seen == luminance && gel.colorSpace?.model == .monochrome)
+        #expect(gel.colorSpace?.model == .rgb && gel.bitsPerComponent == 16)
+        let seen = out.region(x: 300, y: Int(fig.stack.piece(strip: 1)!.top - fig.stack.crop.y0) + 50, w: 1, h: 1, channels: 3)
+        let flat = RawPixels(w.strips[0].source.cgImage).region(x: 300, y: 100, w: 1, h: 1, channels: 3).map { $0 * 257 }   // the gel's own colour, x257
+        #expect(seen == flat)
         // and a color gel that does keep its pixels can't be stacked with the 16-bit gray one: said, and nothing exported
         pkg.project.strips[0].strict = true
         (fig, _) = try figure(pkg)

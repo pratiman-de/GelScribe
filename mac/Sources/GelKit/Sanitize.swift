@@ -124,12 +124,13 @@ extension FigureStyle {
 }
 
 extension GelStrip {
-    mutating func sanitize() {
+    mutating func sanitize(scales: ClosedRange<Double> = 0.5...2) {
         turn = ((turn % 4) + 4) % 4
         rotateDeg = Sane.clamp(rotateDeg, -360, 360, or: 0)
         display.sanitize()
+        lanes?.sanitize()
         shift = Sane.clamp(shift, -Sane.coordinate, Sane.coordinate, or: 0)
-        scale = Sane.clamp(scale, 0.5, 2, or: 1)
+        scale = Sane.clamp(scale, scales.lowerBound, scales.upperBound, or: 1)   // side by side a gel may be sized much more
         // rows that aren't 0 <= top < bottom mean the whole gel
         let t = top ?? 0
         if let b = bottom {
@@ -209,7 +210,7 @@ extension GelProject {
         lanes.sanitize()
         if rows.count > Sane.rows { rows = Array(rows.prefix(Sane.rows)) }
         for i in rows.indices { rows[i].sanitize() }
-        for i in strips.indices { strips[i].sanitize() }
+        for i in strips.indices { strips[i].sanitize(scales: arrangement == .sideBySide ? GelStrip.sideScales : 0.5...2) }
         let n = strips.count
         ladder?.sanitize(strips: n)
         var kept: [Int] = []
@@ -321,6 +322,7 @@ extension GelProject {
     public func keptColumns(strip k: Int, width: Int, mainWidth: Int, mainHeight: Int) -> (left: Double, right: Double) {
         let w = Double(max(width, 1))
         guard k >= 1, k <= strips.count else { return (0, w) }
+        if isSideBySide { return strips[k - 1].sideColumns(width: width) }   // its own columns: nothing to follow
         let (shift, scale) = laneAlignment(k)
         let c = strips[k - 1].columns(width: width, laneCrop: effectiveCrop(width: mainWidth, height: mainHeight), shift: shift, scale: scale)
         guard c.left.isFinite, c.right.isFinite else { return (0, w) }

@@ -25,6 +25,7 @@ struct CanvasView: NSViewRepresentable {
 
     func updateNSView(_ v: CanvasNSView, context: Context) {
         v.workspace = workspace
+        workspace.redraw = { [weak v] in v?.needsDisplay = true }
         if v.lastTool != tool {
             // crop/straighten work on the whole image, everything else on the figure: different units, so re-fit (a gel
             // that's on view by itself is the whole image whatever the tool)
@@ -208,6 +209,11 @@ final class CanvasNSView: NSView {
         guard let ws = workspace else { return }
         ws.refreshCaches()
         guard ws.working != nil else { return }
+        // zoomed out far enough that the reduced pictures show every pixel there is to see: draw those (see `Workspace.viewReduced`)
+        let backing = Double(window?.backingScaleFactor ?? 2)
+        let onScreen = cropMode || stripMode ? Double(mapping.scale) * backing
+            : ws.shownLayout.map { Double(mapping.scale) * $0.ptPerPx * backing } ?? 1
+        ws.viewReduced = onScreen * ws.reduceFactor <= 1
         if cropMode {
             if ws.tool == .straighten { drawStraighten(ctx, ws) } else { drawCrop(ctx, ws) }
             return
@@ -234,6 +240,36 @@ final class CanvasNSView: NSView {
         if ws.showGuides { drawGuides(ctx, ws, layout, m) }
     }
 
+    /// Side by side: every gel's own dividers where that gel sits in the figure, and the lane numbers the labels use (numbered from the
+    /// left across all the gels).
+    private func drawSideDividers(_ ctx: CGContext, _ ws: Workspace, _ stack: StackGeometry, _ l: FigureLayout, _ m: Mapping, _ gel: CGRect) {
+        for piece in stack.pieces {
+            let lanes = ws.project.lanes(ofGel: piece.strip), h = Double(piece.height)
+            for d in lanes.dividers {
+                let top = pxToView(piece.toFigure(x: d.x(atY: piece.sourceTop, height: h), y: 0).x, piece.top, l, m)
+                let bot = pxToView(piece.toFigure(x: d.x(atY: piece.sourceBottom, height: h), y: 0).x, piece.bottom, l, m)
+                strokeLine(ctx, top, bot, color: CGColor(gray: 0, alpha: 0.15), width: 3)
+                strokeLine(ctx, top, bot, color: Self.laneColor.withAlphaComponent(0.6).cgColor, width: 1.25)
+            }
+            let first = ws.project.laneNumbers(ofGel: piece.strip).lowerBound
+            for (i, c) in lanes.centers.enumerated() where c >= piece.sourceLeft && c <= piece.sourceRight {
+                let at = pxToView(piece.toFigure(x: c, y: 0).x, piece.top, l, m)
+                badge("\(first + i)", at: CGPoint(x: at.x, y: gel.minY + 14), color: Self.laneColor.withAlphaComponent(0.85), textColor: .black)
+            }
+        }
+    }
+
+    /// Side by side: the columns a tick of its gel is drawn across, in view points (its ladder lane in the figure).
+    private func sideTickColumns(_ ws: Workspace, _ b: LadderBand, _ ladder: Ladder, _ l: FigureLayout, _ m: Mapping, _ fy: Double) -> (x0: CGFloat, x1: CGFloat)? {
+        guard let piece = ws.shownStack.piece(strip: b.strip) else { return nil }
+        var a = piece.left, z = piece.left + (piece.right - piece.left) * 0.12
+        if let ll = ws.project.ladderLaneX(gel: b.strip, lane: ladder.lane) {
+            let half = ll.width / 0.85 / 2
+            a = piece.toFigure(x: ll.x - half, y: 0).x; z = piece.toFigure(x: ll.x + half, y: 0).x
+        }
+        return (pxToView(a, fy, l, m).x, pxToView(z, fy, l, m).x)
+    }
+
     private func drawGuides(_ ctx: CGContext, _ ws: Workspace, _ l: FigureLayout, _ m: Mapping) {
         let p = ws.project
         let crop = ws.crop
@@ -255,7 +291,8 @@ final class CanvasNSView: NSView {
         // lane dividers: in the main image as placed; through the strips straight down from the top of the crop, where
         // the strips' lanes were lined up
         ctx.saveGState()
-        for d in p.lanes.dividers {
+        if stack.sideBySide { drawSideDividers(ctx, ws, stack, l, m, gel) }
+        for d in stack.sideBySide ? [] : p.lanes.dividers {
             let top = pxToView(d.x(atY: crop.y0, height: H), crop.y0, l, m)
             let bot = pxToView(d.x(atY: crop.y1, height: H), crop.y1, l, m)
             let sel = ws.selection == .divider(d.id)
@@ -280,10 +317,11 @@ final class CanvasNSView: NSView {
         ctx.restoreGState()
 
         // lane numbers while placing dividers
-        if tool == .lanes, let g = ws.geometry, g.count > 0 {
+        if tool == .lanes, !stack.sideBySide, let g = ws.geometry, g.count > 0 {
+            let first = p.isSideBySide ? p.laneNumbers(ofGel: nil).lowerBound : 1   // numbered across all gels, side by side
             for n in 1...g.count {
                 let c = pxToView(g.center(n, atY: crop.y0), crop.y0, l, m)
-                badge("\(n)", at: CGPoint(x: c.x, y: gel.minY + 14), color: Self.laneColor, textColor: .black)
+                badge("\(first + n - 1)", at: CGPoint(x: c.x, y: gel.minY + 14), color: Self.laneColor, textColor: .black)
             }
         }
 
@@ -294,7 +332,9 @@ final class CanvasNSView: NSView {
                 let ry = b.strip == nil ? b.y : crop.y0   // a strip's lanes run straight down from the crop's top
                 let y = pxToView(0, fy, l, m).y
                 var x0 = gel.minX, x1 = gel.minX + gel.width * 0.12
-                if let g = ws.geometry, ladder.lane >= 1, ladder.lane <= g.count {
+                if stack.sideBySide {
+                    if let c = sideTickColumns(ws, b, ladder, l, m, fy) { (x0, x1) = c }
+                } else if let g = ws.geometry, ladder.lane >= 1, ladder.lane <= g.count {
                     x0 = pxToView(g.x(g.boundaries[ladder.lane - 1], atY: ry), fy, l, m).x
                     x1 = pxToView(g.x(g.boundaries[ladder.lane], atY: ry), fy, l, m).x
                 }
@@ -437,7 +477,12 @@ final class CanvasNSView: NSView {
         ctx.restoreGState()
 
         // dividers faintly, to crop around the lanes; on a stacked gel, where its lanes were lined up
-        if let k = ws.activeStrip, let piece = ws.shownStack.piece(strip: k) {
+        if ws.project.isSideBySide {   // each gel's own dividers, in its own pixels
+            for d in ws.project.lanes(ofGel: ws.activeStrip).dividers {
+                strokeLine(ctx, m.view(CGPoint(x: d.xTop, y: 0)), m.view(CGPoint(x: d.xBottom, y: H)),
+                           color: Self.laneColor.withAlphaComponent(0.45).cgColor, width: 1)
+            }
+        } else if let k = ws.activeStrip, let piece = ws.shownStack.piece(strip: k) {
             for d in ws.project.lanes.dividers {
                 let x = piece.scale * d.x(atY: ws.crop.y0, height: Double(ws.imageHeight)) + piece.shift
                 strokeLine(ctx, m.view(CGPoint(x: x, y: 0)), m.view(CGPoint(x: x, y: H)),
@@ -514,6 +559,10 @@ final class CanvasNSView: NSView {
     /// alignment); before there are lanes, a strip at the left of what the figure shows.
     private func ladderColumns(_ ws: Workspace, _ k: Int) -> (a: Double, b: Double) {
         let used = ws.activeStripRect ?? ws.crop
+        if ws.project.isSideBySide {   // its own lanes, in its own pixels
+            guard let ll = ws.project.ladderLaneX(gel: k, lane: ws.project.ladder?.lane ?? 1) else { return (used.x0, used.x0 + used.width * 0.12) }
+            return (ll.x - ll.width / 0.85 / 2, ll.x + ll.width / 0.85 / 2)
+        }
         guard let piece = ws.shownStack.piece(strip: k), let g = ws.geometry, let l = ws.project.ladder, l.lane >= 1, l.lane <= g.count
         else { return (used.x0, used.x0 + used.width * 0.12) }
         return (piece.scale * g.x(g.boundaries[l.lane - 1], atY: ws.crop.y0) + piece.shift,
@@ -573,8 +622,33 @@ final class CanvasNSView: NSView {
         ctx.setStrokeColor(NSColor.controlAccentColor.withAlphaComponent(0.9).cgColor)
         ctx.setLineWidth(1.5)
         ctx.stroke(cr)
-        // the lanes, where they were lined up
-        if ws.showGuides {
+        // side by side: this gel's own lanes, in its own pixels (the Lane tool edits them)
+        if ws.showGuides, ws.project.isSideBySide {
+            ctx.saveGState()
+            ctx.clip(to: r)
+            let H = Double(size.height), editing = ws.tool == .lanes
+            for d in ws.laneSet.dividers {
+                let sel = ws.selection == .divider(d.id), faded = !(editing || sel)
+                let a = m.view(CGPoint(x: d.xTop, y: 0)), b = m.view(CGPoint(x: d.xBottom, y: H))
+                let color = Self.laneColor.withAlphaComponent(faded ? 0.5 : 0.95).cgColor
+                strokeLine(ctx, a, b, color: CGColor(gray: 0, alpha: faded ? 0.2 : 0.35), width: sel ? 4 : 3)
+                strokeLine(ctx, a, b, color: color, width: sel ? 2 : 1.25)
+                if editing || sel {
+                    let dot = m.view(CGPoint(x: d.x(atY: min(max(d.dotY, used.y0), used.y1), height: H), y: min(max(d.dotY, used.y0), used.y1)))
+                    circle(ctx, dot, r: sel ? 6 : 5, fill: color, stroke: CGColor(gray: 1, alpha: 1), width: 1.5)
+                    handle(ctx, m.view(CGPoint(x: d.x(atY: used.y0, height: H), y: used.y0)), color: color)
+                    handle(ctx, m.view(CGPoint(x: d.x(atY: used.y1, height: H), y: used.y1)), color: color)
+                }
+            }
+            if let g = ws.geometry, g.count > 0, editing {
+                let first = ws.project.laneNumbers(ofGel: k).lowerBound
+                for n in 1...g.count {
+                    badge("\(first + n - 1)", at: CGPoint(x: m.view(CGPoint(x: g.center(n, atY: used.y0), y: 0)).x, y: r.minY + 14),
+                          color: Self.laneColor, textColor: .black)
+                }
+            }
+            ctx.restoreGState()
+        } else if ws.showGuides {
             ctx.saveGState()
             ctx.clip(to: r)
             for d in ws.project.lanes.dividers {
@@ -649,6 +723,19 @@ final class CanvasNSView: NSView {
         }
         let tick = hitStripTick(p, ws, k, m), name = hitStripName(p, ws, k, m)
         switch ws.tool {
+        case .lanes where ws.project.isSideBySide:   // this gel's own lane dividers: click between lanes, drag, ⌥-click to delete
+            let rows = ws.laneRows
+            if let hit = hitStripDivider(p, ws, m), let d = ws.laneSet.dividers.first(where: { $0.id == hit.id }) {
+                if free { ws.deleteDivider(hit.id); break }
+                ws.selection = .divider(hit.id)
+                drag = .divider(id: hit.id, part: hit.part, start: d, startPx: q)
+            } else if inside {
+                let id = ws.addDivider(x: q.x.rounded(), y: min(max(q.y, rows.y0), rows.y1).rounded())
+                ws.selection = .divider(id)
+                if let d = ws.laneSet.dividers.first(where: { $0.id == id }) { drag = .divider(id: id, part: .body, start: d, startPx: q) }
+            } else {
+                ws.selection = nil
+            }
         case .ladder, .select:
             if let id = tick {
                 ws.selection = .tick(id); press = (p, .tick(id)); drag = .tick(id: id)
@@ -731,7 +818,26 @@ final class CanvasNSView: NSView {
 
     // MARK: hit testing (view coordinates)
 
+    /// A divider of the gel on view, side by side: its dot or an end (at the rows the figure keeps), or anywhere along it.
+    private func hitStripDivider(_ p: CGPoint, _ ws: Workspace, _ m: Mapping) -> (id: UUID, part: DividerPart)? {
+        let rows = ws.laneRows, H = Double(ws.laneGelSize.height)
+        var best: (UUID, DividerPart, CGFloat)?
+        for d in ws.laneSet.dividers {
+            let top = m.view(CGPoint(x: d.x(atY: rows.y0, height: H), y: rows.y0)), bot = m.view(CGPoint(x: d.x(atY: rows.y1, height: H), y: rows.y1))
+            let dy = min(max(d.dotY, rows.y0), rows.y1)
+            let dot = m.view(CGPoint(x: d.x(atY: dy, height: H), y: dy))
+            for (pt, part) in [(top, DividerPart.top), (bot, .bottom), (dot, .body)] {
+                let dist = hypot(pt.x - p.x, pt.y - p.y)
+                if dist < 8, best == nil || dist < best!.2 { best = (d.id, part, dist) }
+            }
+            let dist = distanceToSegment(p, m.view(CGPoint(x: d.xTop, y: 0)), m.view(CGPoint(x: d.xBottom, y: H)))
+            if dist < 5, best == nil || dist + 2 < best!.2 { best = (d.id, .body, dist + 2) }
+        }
+        return best.map { ($0.0, $0.1) }
+    }
+
     private func hitDivider(_ p: CGPoint, _ ws: Workspace, _ l: FigureLayout, _ m: Mapping) -> (id: UUID, part: DividerPart)? {
+        if ws.shownStack.sideBySide { return nil }   // side by side the dividers are edited in each gel's own view
         let crop = ws.crop, H = Double(ws.imageHeight)
         var best: (UUID, DividerPart, CGFloat)?
         for d in ws.project.lanes.dividers {
@@ -759,7 +865,9 @@ final class CanvasNSView: NSView {
             let ry = b.strip == nil ? b.y : crop.y0
             let y = pxToView(0, fy, l, m).y
             var x0 = gel.minX - 50, x1 = gel.minX + gel.width * 0.15
-            if let g = ws.geometry, ladder.lane >= 1, ladder.lane <= g.count {
+            if stack.sideBySide {
+                if let c = sideTickColumns(ws, b, ladder, l, m, fy) { x0 = min(gel.minX - 50, c.x0 - 6); x1 = c.x1 + 30 }
+            } else if let g = ws.geometry, ladder.lane >= 1, ladder.lane <= g.count {
                 x0 = min(gel.minX - 50, pxToView(g.x(g.boundaries[ladder.lane - 1], atY: ry), fy, l, m).x)
                 x1 = pxToView(g.x(g.boundaries[ladder.lane], atY: ry), fy, l, m).x + 30
                 if ladder.side == .right { x1 = max(x1, gel.maxX + 50) }
@@ -833,7 +941,7 @@ final class CanvasNSView: NSView {
         let stack = ws.shownStack
         // with strips, a click with the Select tool in a piece's rows chooses it: the gel the inspector and crop/straighten act
         // on. The other tools act on the gel under the click (a tick or name belongs to it) but never change the chosen gel.
-        if ws.tool == .select, stack.hasStrips, p.y >= gel.minY, p.y <= gel.maxY, let piece = stack.piece(atFigureY: px.y) {
+        if ws.tool == .select, stack.hasStrips, p.y >= gel.minY, p.y <= gel.maxY, let piece = stack.piece(atFigureX: px.x, y: px.y) {
             ws.chooseGel(piece.strip)
         }
 
@@ -898,12 +1006,18 @@ final class CanvasNSView: NSView {
                 drag = .name(id: id)
             } else if editLabel(at: p, ws, l, m) {
             } else if e.clickCount >= 2, p.y < gel.minY, p.x > gel.minX, p.x < gel.maxX,
-                      let g = ws.geometry, let lane = g.lane(atX: px.x, y: ws.crop.y0) {
+                      let lane = laneAt(ws, figureX: px.x) {
                 showLaneLabelEditor(lane: lane, at: CGRect(x: p.x - 10, y: p.y - 8, width: 20, height: 16))
-            } else if e.clickCount >= 2, inGel, stack.hasStrips, let piece = stack.piece(atFigureY: px.y) {
+            } else if e.clickCount >= 2, inGel, stack.hasStrips, let piece = stack.piece(atFigureX: px.x, y: px.y) {
                 ws.selection = nil
                 ws.showGel(piece.strip)   // a double-click: that gel on its own
-            } else if inGel, stack.hasStrips, let piece = stack.piece(atFigureY: px.y) {
+            } else if inGel, stack.sideBySide, let piece = stack.piece(atFigureX: px.x, y: px.y), piece.strip != nil {
+                // side by side, dragging a gel moves it up or down against the gel with the lanes (the lanes gel stays put)
+                ws.selection = nil
+                drag = .strip(k: piece.strip, startShift: ws.gelShift(piece.strip), startView: p, pointsPerPx: max(m.scale * l.ptPerPx, 1e-6),
+                              column: 0, zoomed: zoom)
+                zoom = m.scale
+            } else if inGel, stack.hasStrips, !stack.sideBySide, let piece = stack.piece(atFigureX: px.x, y: px.y) {
                 // dragging a gel moves it sideways (the lanes gel too, with its lane dividers, labels, ticks and names): no other gel moves
                 ws.selection = nil
                 drag = .strip(k: piece.strip, startShift: ws.gelShift(piece.strip), startView: p, pointsPerPx: max(m.scale * l.ptPerPx, 1e-6),
@@ -915,6 +1029,17 @@ final class CanvasNSView: NSView {
         default: break
         }
         needsDisplay = true
+    }
+
+    /// The lane (numbered across all gels, side by side) under figure column `x`.
+    private func laneAt(_ ws: Workspace, figureX x: Double) -> Int? {
+        let stack = ws.shownStack
+        if stack.sideBySide {
+            let a = ws.project.figureLanes(stack: stack)
+            let near = a.centers.enumerated().compactMap { i, c in c.map { (i + 1, abs($0 - x)) } }.min { $0.1 < $1.1 }
+            return near.flatMap { $0.1 <= a.width ? $0.0 : nil }
+        }
+        return ws.geometry?.lane(atX: x, y: ws.crop.y0)
     }
 
     /// One click on a figure label opens its editor, whatever the tool: text and size for titles and labels, the
@@ -953,10 +1078,10 @@ final class CanvasNSView: NSView {
             pan = clamped(CGPoint(x: startPan.x + p.x - start.x, y: startPan.y + p.y - start.y), scale: mapping.scale)
         case .divider(let id, let part, let start, let startPx)?:
             guard let l = ws.shownLayout else { return }
-            let px = viewToPx(p, l, mapping)
+            let px = stripMode ? mapping.model(p) : viewToPx(p, l, mapping)   // a gel on its own is in its own pixels
             switch part {
             case .body:
-                let dotY = min(max(px.y, ws.crop.y0), ws.crop.y1)
+                let dotY = min(max(px.y, ws.laneRows.y0), ws.laneRows.y1)
                 ws.dragDivider(id, from: start, .move(dx: (px.x - startPx.x).rounded(), dotY: dotY.rounded()))
             case .top: ws.dragDivider(id, from: start, .top(x: px.x.rounded()))
             case .bottom: ws.dragDivider(id, from: start, .bottom(x: px.x.rounded()))
@@ -993,6 +1118,10 @@ final class CanvasNSView: NSView {
             let r = cropRect(h, r0, from: s0, to: mapping.model(p), ws)
             if ws.activeStrip != nil { ws.liveStripCrop(r) } else { ws.liveCrop(r) }
         case .strip(let k, let s0, let start, let pointsPerPx, let column, _)?:
+            if ws.project.isSideBySide {   // vertical: the gel follows the pointer up and down
+                ws.liveStripShift(k, s0 - ws.stripScale(k) * Double((p.y - start.y) / pointsPerPx))
+                break
+            }
             ws.liveStripShift(k, s0 - ws.stripScale(k) * Double((p.x - start.x) / pointsPerPx))
             // the figure may have moved on the page (it starts at the leftmost column any gel keeps): slide the view so the gel's column
             // is under the pointer again, which also keeps the gels that didn't move where they were on screen
@@ -1072,7 +1201,10 @@ final class CanvasNSView: NSView {
         if cropMode || ws.placingUnit { NSCursor.crosshair.set(); return }
         if stripMode, let k = ws.activeStrip {
             let m = mapping
-            if hitStripTick(p, ws, k, m) != nil || hitStripName(p, ws, k, m) != nil { NSCursor.resizeUpDown.set() }
+            if ws.tool == .lanes, ws.project.isSideBySide {
+                if let hit = hitStripDivider(p, ws, m) { (hit.part == .body ? NSCursor.resizeLeftRight : NSCursor.crosshair).set() } else { NSCursor.crosshair.set() }
+            }
+            else if hitStripTick(p, ws, k, m) != nil || hitStripName(p, ws, k, m) != nil { NSCursor.resizeUpDown.set() }
             else if ws.tool == .ladder || ws.tool == .names { NSCursor.crosshair.set() } else { NSCursor.arrow.set() }
             return
         }
@@ -1189,7 +1321,7 @@ final class CanvasNSView: NSView {
     private func nudge(_ ws: Workspace, dx: Double, dy: Double) {
         switch ws.selection {
         case .divider(let id)?:
-            guard dx != 0, let d = ws.project.lanes.dividers.first(where: { $0.id == id }) else { return }
+            guard dx != 0, let d = ws.laneSet.dividers.first(where: { $0.id == id }) else { return }
             ws.dragDivider(id, from: d, .move(dx: dx, dotY: d.dotY))
             ws.endGesture("Nudge Lane Divider")
         case .tick(let id)?:
@@ -1200,6 +1332,11 @@ final class CanvasNSView: NSView {
             ws.moveName(id, y: a.y + dy); ws.endGesture("Nudge Band Name")
         case nil:
             // nothing selected, with several gels: left and right move the chosen gel (the lanes gel too) a pixel at a time
+            if ws.project.isSideBySide {   // up and down move the chosen gel against the gel with the lanes
+                guard dy != 0 else { return }
+                ws.nudgeActiveStrip(byRows: dy)
+                return
+            }
             guard dx != 0, !ws.project.strips.isEmpty else { return }
             ws.nudgeActiveStrip(by: dx)
         case .text?: break

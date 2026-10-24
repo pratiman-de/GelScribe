@@ -9,7 +9,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable, Optional
 
-from PySide6.QtCore import QObject, QTimer, Signal
+import threading
+
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QImage, QUndoCommand, QUndoStack
 
 from ..core import labels as ql
@@ -20,7 +22,7 @@ from ..core import strips as stacked
 from ..core.detect import snap_band
 from ..core.image import ImageError, SourceImage, WorkingImage
 from ..core.layout import FigureLayout, layout as make_layout
-from ..core.model import (BandAnnotation, DisplaySettings, GelProject, LabelGroup, LabelRow, Ladder, LaneDivider,
+from ..core.model import (SIDE_SCALES, BandAnnotation, DisplaySettings, GelProject, LabelGroup, LabelRow, Ladder, LaneDivider,
                           PixelRect, Role, ValueScale, format_size, parse_separator, separator_gray, separator_rgb, sround)
 from ..core.package import GelPackage, is_gelscribe_folder, is_plain_name, names_in, uses_image
 from ..core.scheme import LabelScheme
@@ -39,6 +41,62 @@ TOOL_TITLE = {t[0]: t[1] for t in TOOLS}
 TOOL_HINT = {t[0]: t[3] for t in TOOLS}
 FULL_IMAGE_TOOLS = ("crop", "straighten")
 TOOL_TAB = {"lanes": "labels", "ladder": "ladder", "names": "names", "crop": "figure", "straighten": "figure"}
+
+
+class _Job:
+    """One background build of exact pixels for a project's angles (see Workspace.build_exact)."""
+
+    def __init__(self, project: GelProject):
+        self.project = project
+        self.cancel = threading.Event()
+        self.done = threading.Event()
+        self.main = None
+        self.strips: list = []
+        self.main_out = None
+        self.strip_out: list = []
+        self.error: Optional[BaseException] = None
+
+
+class _Run(QRunnable):
+    def __init__(self, job: _Job, signal):
+        super().__init__()
+        self.job, self.signal = job, signal
+
+    def run(self):
+        job, p = self.job, self.job.project
+        try:
+            source, wanted = job.main
+            if wanted and not job.cancel.is_set():
+                w = WorkingImage(source, p)
+                dark_box: list = []
+                side = threading.Thread(target=lambda: dark_box.append(w.darkness(p.display.bands_dark)))
+                side.start()   # (the snapping map is independent of the picture: made alongside it)
+                view = w.view_image(p, p.view_enhance) if not job.cancel.is_set() else None
+                side.join()
+                dark = dark_box[0]
+                key = (id(source.data), p.strict, p.rotate_deg, p.fill_padding, p.fill_mode, p.fill_value,
+                       p.display.bands_dark, p.turn)
+                job.main_out = (w, dark, key, view)
+            for k, old in job.strips:
+                if job.cancel.is_set():
+                    break
+                s = p.strips[k - 1]
+                w = WorkingImage(old["source"], p.strip_project(k))
+                d = s.display
+                key = (old["key"][0], p.is_strict(k), s.rotate_deg, s.turn, p.fill_padding, p.fill_mode, p.fill_value,
+                       d.bands_dark)
+                c = {"key": key, "source": old["source"], "working": w, "dark": w.darkness(d.bands_dark),
+                     "view": w.view_image(p.strip_project(k)), "qview": None, "image": s.image,
+                     "rot": 0.0 if p.is_strict(k) else s.rotate_deg}
+                c["view_key"] = (key, d.black, d.white, d.gamma, d.invert)
+                job.strip_out.append((k, c))
+        except BaseException as e:   # (the main thread goes on with the exact pixels made there)
+            job.error = e
+        job.done.set()
+        try:
+            self.signal.emit(job)
+        except RuntimeError:   # the window was closed meanwhile
+            pass
 
 
 class _Step(QUndoCommand):
@@ -76,6 +134,8 @@ class _GelsStep(QUndoCommand):
 
 #: set_strict's default: the gel that is chosen
 _CHOSEN = object()
+#: the longest side of the small copy of a gel's picture that is turned while its angle is being changed
+PREVIEW_SIDE = 1000
 
 
 class Workspace(QObject):
@@ -87,6 +147,7 @@ class Workspace(QObject):
     ask_export_dpi = Signal(float)
     zoom_request = Signal(str)    # "fit", "actual", "in", "out"
     reveal_contrast = Signal()
+    _built = Signal(object)       # a background build of exact pixels finished (from its thread)
 
     def __init__(self, package: Optional[GelPackage] = None, folder: Optional[Path] = None):
         super().__init__()
@@ -148,6 +209,19 @@ class Workspace(QObject):
         self._digests: dict = {}           # id(image bytes) → (the bytes, their SHA-256), so a panel refresh doesn't hash
         self._seen: dict = {}              # image file name → its bytes, for every image this project has had this session
         self._composed = (None, None)
+        # a gel's angle while it is being changed (see live_rotation): its exact pixels wait, and the picture built at the
+        # last exact angle is shown turned by the difference. The angles the pixels were built at, and small copies of
+        # the pictures to turn (quick to draw).
+        self._lazy = False
+        self._built_rot = 0.0
+        self._small: dict = {}
+        self._settle_timer = QTimer(self)
+        self._settle_timer.setSingleShot(True)
+        self._settle_timer.setInterval(250)
+        self._settle_timer.timeout.connect(self.build_exact)
+        self._job: Optional[_Job] = None   # the background build of the exact pixels, while one runs
+        self._keep_lazy = False
+        self._built.connect(self._land)
         self.refresh_caches()
         if package is not None:   # a loaded project: rows and marks that don't fit their gels (a damaged file) are put right
             before = self.project.copy()
@@ -209,6 +283,8 @@ class Workspace(QObject):
     def dispose(self) -> None:
         """Its window is closing: nothing more reaches it (a dirty undo stack still signals as it's destroyed)."""
         self._quick_pause.stop()
+        self._settle_timer.stop()
+        self._drop_job()
         self.undo.blockSignals(True)
         self.blockSignals(True)
 
@@ -226,6 +302,8 @@ class Workspace(QObject):
         """Makes p the project. The chosen gel stays chosen (found again by its image, wherever it sits now); an undo or
         redo also drops the selection, whose numbers may mean other ticks or names in the other state."""
         chosen = self._chosen_image()
+        if not self._keep_lazy:
+            self._lazy = False   # an undo, redo or loaded project: exact pixels
         self.project = p.copy()
         self._active = next((i + 1 for i, s in enumerate(p.strips) if s.image == chosen), None) if chosen else None
         if replay:
@@ -248,6 +326,8 @@ class Workspace(QObject):
             self.finish_quick_labels(normalize=False)   # close the typing run first: clean undo
         if self._gesture_start is not None:
             self.end_gesture("Edit")
+        self._lazy = False   # (an edit that is not the live dragging of an angle gets its exact pixels now)
+        self._drop_job()
         before = self.project.copy()
         after = self.project.copy()
         fn(after)
@@ -285,6 +365,11 @@ class Workspace(QObject):
         p = self.project
         key = (id(self.image_data), p.strict, p.rotate_deg, p.fill_padding, p.fill_mode, p.fill_value,
                p.display.bands_dark, p.turn)
+        # only the angle changed while it is being dragged: the pixels for it are made when it stops (settle)
+        only_angle = (self._lazy and self.working is not None and self._image_key is not None
+                      and key[:2] + key[3:] == self._image_key[:2] + self._image_key[3:])
+        if only_angle:
+            key = self._image_key
         if key != self._image_key:
             if key == self._main_failed:   # told already: not tried again on every redraw
                 return
@@ -306,6 +391,7 @@ class Workspace(QObject):
             self._main_failed = None
             self.image_w, self.image_h = self.working.width, self.working.height
             self._image_key, self._view_key = key, None
+            self._built_rot = p.effective_rotation
         d = p.display
         vk = (key, p.view_enhance, d.black, d.white, d.gamma, d.invert)
         if vk != self._view_key:
@@ -315,6 +401,143 @@ class Workspace(QObject):
         self._refresh_strip_caches(p)
         self.stack = stacked.StackGeometry(p, self.image_w, self.image_h, self.strip_sizes)
         self.layout = make_layout(p, self.image_w, self.image_h, self.stack)
+
+    # ------------------------------------------------------------------------------------------------ rotation preview
+
+    def pending_rotation(self, strip: Optional[int] = None) -> float:
+        """How far (degrees, counter-clockwise) a gel's angle is ahead of its built pixels: 0 when they are exact. While it is not
+        0 the canvas draws the gel's picture turned by it."""
+        p = self.project
+        if strip is None:
+            return p.effective_rotation - self._built_rot if self.working is not None else 0.0
+        c = self._strip_cache.get(p.strips[strip - 1].image) if 1 <= strip <= len(p.strips) else None
+        if c is None:
+            return 0.0
+        return (0.0 if p.is_strict(strip) else p.strips[strip - 1].rotate_deg) - c.get("rot", 0.0)
+
+    def figure_fill(self, strip: Optional[int] = None) -> float:
+        """The gray (0 to 1) the corners an angle uncovers are filled with, for a gel."""
+        gel = self.working if strip is None else self.strip_working(strip)
+        return gel.figure_fill if gel is not None else 1.0
+
+    def preview_image(self, strip: Optional[int] = None) -> Optional[QImage]:
+        """A gel's picture (as built, at its last exact angle) at a size that is quick to turn and draw, for the preview of an
+        angle being changed; cached until the picture changes. The canvas draws it over the whole gel's frame."""
+        full = self.view_full if strip is None else self._strip(strip, "qview")
+        if full is None:
+            return None
+        key = (id(full), full.width(), full.height())
+        hit = self._small.get(strip)
+        if hit is None or hit[0] != key:
+            long = max(full.width(), full.height())
+            small = full if long <= PREVIEW_SIDE else full.scaled(
+                max(1, round(full.width() * PREVIEW_SIDE / long)), max(1, round(full.height() * PREVIEW_SIDE / long)),
+                Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            hit = self._small[strip] = (key, small)
+        return hit[1]
+
+    @property
+    def rotation_pending(self) -> bool:
+        return self.working is not None and (self.pending_rotation(None) != 0 or
+                                             any(self.pending_rotation(k + 1) != 0 for k in range(len(self.project.strips))))
+
+    def _drop_job(self) -> None:
+        if self._job is not None:
+            self._job.cancel.set()
+            self._job = None
+
+    def build_exact(self) -> None:
+        """Starts making the exact pixels for the angles that are only being previewed, on another thread (a newer angle drops
+        the job and the pixels it was making); the window stays alive and the preview stays up until they land."""
+        self._settle_timer.stop()
+        if not self.rotation_pending or self.source is None:
+            return
+        self._drop_job()
+        p = self.project.copy()
+        job = _Job(p)
+        job.main = (self.source, self.pending_rotation(None) != 0)
+        job.strips = []
+        for k in range(1, len(p.strips) + 1):
+            c = self._strip_cache.get(p.strips[k - 1].image)
+            if c is not None and self.pending_rotation(k) != 0:
+                job.strips.append((k, c))
+        self._job = job
+        QThreadPool.globalInstance().start(_Run(job, self._built))
+
+    def _land(self, job: "_Job") -> None:
+        """A background build finished (on the main thread): its pixels replace the previewed ones when they are still the ones
+        wanted (the angles unchanged since)."""
+        if job is not self._job:
+            return
+        self._job = None
+        if job.error is not None or job.cancel.is_set():
+            return
+        p, q = self.project, job.project
+        if job.main_out is not None:
+            if p.effective_rotation != q.effective_rotation or self._image_key is None or self._image_key[0] != id(self.image_data):
+                return
+            working, dark, key, view = job.main_out
+            self.working, self.dark = working, dark
+            self._image_key, self._built_rot = key, q.effective_rotation
+            d = q.display
+            self.view_array, self.view_full = view, render.qimage(view)
+            self._view_key = (key, q.view_enhance, d.black, d.white, d.gamma, d.invert)
+        for k, c in job.strip_out:
+            if k > len(p.strips) or p.strips[k - 1].image != c["image"]:
+                continue
+            now = 0.0 if p.is_strict(k) else p.strips[k - 1].rotate_deg
+            if now != c["rot"]:
+                continue
+            c["qview"] = render.qimage(c["view"])
+            self._strip_cache[c["image"]] = c
+        self._lazy = False
+        self.refresh_caches()
+        self.changed.emit()
+
+    def settle(self) -> None:
+        """The exact pixels for any angle that is only being previewed, now: what exports, detection and everything that reads pixels
+        want. A build in the background that is making them is waited for."""
+        self._settle_timer.stop()
+        self._lazy = False
+        if not self.rotation_pending:
+            return
+        job = self._job
+        if job is not None and job.done.wait(timeout=60) and job is self._job:
+            self._land(job)
+            if not self.rotation_pending:
+                return
+        self._drop_job()
+        self.refresh_caches()
+        self.changed.emit()
+
+    def live_rotation(self, degrees: float) -> None:
+        """Live, while the angle of the chosen gel is dragged (a slider) or stepped: the picture shows at once as the last exact one
+        turned by the difference, and the exact pixels are made, on another thread, when the angle has held still for a moment
+        (or end_rotation)."""
+        d = min(max(degrees, -45), 45)
+        k = self.active_strip
+        size = self.gel_size(k)
+        if size is None:
+            return
+        w, h = size
+        self._lazy = True
+        self._drop_job()   # whatever was being made is for an older angle
+        if k is not None:
+            self.live(lambda p: ops.set_strip_rotation(p, k, d, w, h))
+        else:
+            self.live(lambda p: ops.set_rotation(p, d, self.image_w, self.image_h))
+        self._settle_timer.start()
+
+    def end_rotation(self) -> None:
+        """The change of angle is over: one undo step, and the exact pixels are made (in the background)."""
+        self._settle_timer.stop()
+        self._lazy = True
+        self._keep_lazy = True   # (the undo step's first redo must not ask for them on this thread)
+        try:
+            self.end_gesture("Rotate Gel" if self.active_strip is not None else "Rotate")
+        finally:
+            self._keep_lazy = False
+        self.build_exact()
 
     # ------------------------------------------------------------------------------------------------ stacked gels
 
@@ -326,6 +549,8 @@ class Workspace(QObject):
             if data is not None:
                 key = (id(data), p.is_strict(i + 1), s.rotate_deg, s.turn, p.fill_padding, p.fill_mode, p.fill_value,
                        s.display.bands_dark)
+                if (self._lazy and c is not None and c["key"][:2] + c["key"][3:] == key[:2] + key[3:]):
+                    key = c["key"]   # only its angle changed, while it is being dragged: see refresh_caches
                 if c is None or c["key"] != key:
                     c = self._decode_strip(p, i + 1, data, key, c)
             else:
@@ -357,7 +582,7 @@ class Workspace(QObject):
             source = old["source"] if old is not None and old["source"].data is data else SourceImage(data)
             w = WorkingImage(source, p.strip_project(k))
             return {"key": key, "source": source, "working": w, "dark": w.darkness(s.display.bands_dark),
-                    "view_key": None, "view": None, "qview": None}
+                    "view_key": None, "view": None, "qview": None, "rot": 0.0 if p.is_strict(k) else s.rotate_deg}
         except Exception:   # an unreadable image
             self._strip_failures[s.image] = key
             self.message.emit(stacked.unreadable_message(p, k))
@@ -438,6 +663,42 @@ class Workspace(QObject):
     def views_lanes_gel(self) -> bool:
         return self.shows_gel and self.active_strip is None
 
+    @property
+    def lanes_tool_off(self) -> bool:
+        """The lane dividers belong to the gel with the lanes, so they can't be set while another gel is on view. Side by side
+        every gel has its own lanes, set in that gel's own view; the figure itself has no dividers to set."""
+        return (not self.shows_gel) if self.project.is_side_by_side else self.views_other_gel
+
+    @property
+    def lanes_tool_note(self) -> str:
+        if self.project.is_side_by_side:
+            return "Lane dividers are set in each gel's own view: choose a gel in the switcher above the figure."
+        return f"Lane dividers are set on {self.gel_name(None)}, the gel with the lanes."
+
+    @property
+    def lane_gel(self) -> Optional[int]:
+        """The gel whose lane dividers the Lane tool edits: the gel on view when the gels sit side by side, else the gel with the
+        lanes (None)."""
+        return self.active_strip if self.project.is_side_by_side and self.shows_gel else None
+
+    @property
+    def lane_set(self):
+        """Its dividers and lanes."""
+        return self.project.lanes_of(self.lane_gel)
+
+    @property
+    def lane_gel_size(self) -> tuple[int, int]:
+        return self.gel_size(self.lane_gel) or (self.image_w, self.image_h)
+
+    @property
+    def lane_rows(self) -> tuple[float, float]:
+        """The rows of that gel the figure keeps (where the divider ends are)."""
+        k = self.lane_gel
+        if k is not None and 1 <= k <= len(self.project.strips):
+            return self.project.strips[k - 1].used_rows(self.lane_gel_size[1])
+        c = self.crop
+        return c.y0, c.y1
+
     def show_gel(self, k: Optional[int]) -> None:
         """The switcher's Gel N: gel k (None = the gel with the lanes) is chosen and shown on its own, zoomed to fit."""
         if not self.project.strips or (k is not None and not 1 <= k <= len(self.project.strips)):
@@ -454,6 +715,8 @@ class Workspace(QObject):
     def show_figure(self) -> None:
         """The switcher's Figure: the stacked figure again, zoomed to fit. The chosen gel stays chosen."""
         self._shows_gel = False
+        if self.lanes_tool_off and self.tool == "lanes":   # side by side the figure has no dividers to set
+            self.tool = "select"
         self.selection = None
         self.zoom_request.emit("fit")
         self.view_changed.emit()
@@ -461,7 +724,7 @@ class Workspace(QObject):
     def _gel_view_changed(self) -> None:
         """A gel view opened or moved to another gel: the lane divider tool is only for the gel with the lanes, and the
         view fits."""
-        if self.views_other_gel and self.tool == "lanes":
+        if self.lanes_tool_off and self.tool == "lanes":
             self.tool = "select"
         self.selection = None
         self.zoom_request.emit("fit")
@@ -482,7 +745,9 @@ class Workspace(QObject):
 
     def _lanes_alone(self):
         if self._single is None:
-            stack = stacked.StackGeometry(self.project, self.image_w, self.image_h, [])
+            alone = self.project.copy()
+            alone.arrangement = "top_to_bottom"   # on its own it is a figure of its own, drawn in its own pixels
+            stack = stacked.StackGeometry(alone, self.image_w, self.image_h, [])
             self._single = (stack, make_layout(self.project, self.image_w, self.image_h, stack))
         return self._single
 
@@ -546,7 +811,9 @@ class Workspace(QObject):
         d = self._strip(q.strip, "dark")
         y = float(sround(ly))
         if self.snapping and not free and d is not None:
-            w = (self.project.lanes.width if self.project.lanes.width > 0 else 100) * q.scale
+            side = self.project.is_side_by_side
+            base = self.project.lanes_of(q.strip).width if side else self.project.lanes.width
+            w = (base if base > 0 else 100) * (1.0 if side else q.scale)
             s = snap_band(d, lx, ly, w)
             y = s if s is not None else y
         return self.project.clamp_y(y, q.strip, q.width, q.height)
@@ -554,6 +821,11 @@ class Workspace(QObject):
     def snap_in_figure(self, x: float, y: float, free: bool) -> tuple[Optional[int], float, float]:
         """Snapping in whichever gel holds figure point (x, y): that gel, y in its own pixels, and y in the figure."""
         g = self.shown_stack
+        if g is not None and g.side_by_side:   # side by side: the gel under the click, any gel
+            q = g.piece_at_figure_x(x, y)
+            if q is not None:
+                ly = self._snapped_in(q, x, y, free)
+                return q.strip, ly, q.to_figure(0, ly)[1]
         q = g.piece_at_figure_y(y) if (g and g.has_strips) else None
         if q is None or q.strip is None:
             sy = self.snapped_y(x, y, free)
@@ -567,8 +839,10 @@ class Workspace(QObject):
         y = self.clamp_mark_y(float(sround(y)), strip)
         d = self.dark if strip is None else self._strip(strip, "dark")
         if self.snapping and not free and d is not None:
-            lane_w = self.project.lanes.width if self.project.lanes.width > 0 else 100
-            if strip is not None:
+            side = self.project.is_side_by_side
+            base = self.project.lanes_of(strip).width if side else self.project.lanes.width
+            lane_w = base if base > 0 else 100
+            if strip is not None and not side:
                 lane_w *= self.project.effective_alignment(strip)[1]
             s = snap_band(d, x, y, lane_w)
             y = s if s is not None else y
@@ -622,7 +896,7 @@ class Workspace(QObject):
         self.active_strip = k
         self.inspector_tab = "figure"
         self.inspector_visible = True
-        if len(self.project.lanes.centers) >= 2:
+        if self.project.is_side_by_side or len(self.project.lanes.centers) >= 2:
             self.auto_align()
         else:
             self.align_note = f"Place the lane dividers on {self.gel_name(None)}, then Auto-align lines this gel up."
@@ -682,7 +956,7 @@ class Workspace(QObject):
         """Gel k lined up under the lanes of project p (as it is, or as an edit is about to make it), by that gel's own
         Keep original pixels setting: the fit, or why there is none, and a note when whole pixels fit it badly and
         stretching would do better. None when there are no lanes yet or the gel's image can't be read."""
-        if not 1 <= k <= len(p.strips) or len(p.lanes.centers) < 2:
+        if p.is_side_by_side or not 1 <= k <= len(p.strips) or len(p.lanes.centers) < 2:
             return None
         c = self._strip_cache.get(p.strips[k - 1].image)
         if c is None:
@@ -703,11 +977,47 @@ class Workspace(QObject):
                 else (f"; stretched {(r.scale - 1) * 100:.2f}%." if r.scale != 1 else "."))
         return f"Lanes line up within {format_size(r.worst)} px{lanes}{tail}" + (f" {hint}" if hint else "")
 
+    def _align_vertically(self, p: GelProject, k: int) -> Optional[str]:
+        """Side by side, gel k lined up vertically with the gel with the lanes (the ladder bands both have, else the tops), in p.
+        The note says which. None for a gel that can't be read."""
+        size = self.gel_size(k)
+        if size is None:
+            return None
+        c = p.effective_crop(self.image_w, self.image_h)
+        return ops.align_vertically(p, k, (c.y0, c.y1), size[1])
+
+    def set_arrangement(self, arrangement: str) -> None:
+        """Stacks the gels top to bottom or puts them side by side (undoable). Each gel keeps its lanes, ticks, names and crop; the
+        placement of each gel starts over, and going side by side lines them up by their ladder bands (or tops) straight away."""
+        if arrangement == self.project.arrangement:
+            return
+        notes: list[str] = []
+
+        def fn(p):
+            ops.set_arrangement(p, arrangement)
+            if arrangement == "side_by_side":   # gels arrive sized and lined up
+                for k in range(1, len(p.strips) + 1):
+                    n = self._align_vertically(p, k)
+                    if n is not None:
+                        notes.append(f"{self.gel_name(k)}: {n}")
+        self.edit("Arrangement", fn)
+        self.align_note = " ".join(notes) if notes else None
+        if self.lanes_tool_off and self.tool == "lanes":
+            self.tool = "select"
+        self.refresh_caches()
+        self.view_changed.emit()
+
     def auto_align(self) -> None:
         """Finds the chosen gel's lanes and lines them up under the lanes (a whole-pixel shift while that gel keeps its
         original pixels, a shift and a stretch when it doesn't). With no trustworthy fit it changes nothing and says why."""
         k = self.active_strip
         if k is None:
+            return
+        if self.project.is_side_by_side:   # vertical: the ladder bands both gels have, else the tops
+            note: list = []
+            self.edit("Auto-align Gel", lambda p: note.append(self._align_vertically(p, k)))
+            self.align_note = note[0] if note else None
+            self.view_changed.emit()
             return
         found = self._alignment(self.project, k)
         r, hint = found if found else (None, None)
@@ -723,6 +1033,18 @@ class Workspace(QObject):
 
     def auto_align_all(self) -> None:
         """Lines every stacked gel up under the lanes, in one step."""
+        if self.project.is_side_by_side:
+            notes: list[str] = []
+
+            def vertical(p):
+                for k in range(1, len(p.strips) + 1):
+                    n = self._align_vertically(p, k)
+                    if n is not None:
+                        notes.append(f"{self.gel_name(k)}: {n}")
+            self.edit("Auto-align Gels", vertical)
+            self.align_note = " ".join(notes) if notes else None
+            self.view_changed.emit()
+            return
         if len(self.project.lanes.centers) < 2:
             self.align_note = f"Place the lane dividers on {self.gel_name(None)} first."
             self.view_changed.emit()
@@ -749,7 +1071,9 @@ class Workspace(QObject):
 
     def gel_shift(self, k: Optional[int]) -> float:
         """Where a gel sits sideways: the Shift field's number (k None = the gel with the lanes, in whole pixels)."""
-        return self.project.effective_alignment(k)[0] if k is not None else self.project.effective_main_shift
+        if k is None:
+            return 0.0 if self.project.is_side_by_side else self.project.effective_main_shift
+        return self.project.effective_alignment(k)[0]
 
     @property
     def active_shift(self) -> float:
@@ -758,12 +1082,26 @@ class Workspace(QObject):
     def set_shift(self, v: float) -> None:
         """The Shift field: the chosen gel's place sideways, the gel with the lanes' too."""
         k = self.active_strip
+        if k is None and self.project.is_side_by_side:
+            return   # the gel with the lanes is what the others are placed against
         self.edit("Line Up Gel", lambda p: ops.place_gel(p, k, v))
 
     def set_scale(self, v: float) -> None:
         k = self.active_strip
-        if k is not None and not self.project.is_strict(k):
-            self.edit("Stretch Gel", lambda p: setattr(p.strips[k - 1], "scale", min(max(sround(v * 10000) / 10000, 0.5), 2)))
+        if k is None or self.project.is_strict(k):
+            return
+        side = self.project.is_side_by_side
+        lo, hi = SIDE_SCALES if side else (0.5, 2.0)
+        new = min(max(sround(v * 10000) / 10000, lo), hi)
+        size = self.gel_size(k)
+
+        def fn(p):
+            if side and size is not None:   # sized about the top of what the gel shows, which stays where it is
+                shift, scale = p.effective_alignment(k)
+                top = p.strips[k - 1].used_rows(size[1])[0]
+                p.strips[k - 1].shift = top - new * ((top - shift) / scale)
+            p.strips[k - 1].scale = new
+        self.edit("Stretch Gel", fn)
 
     def strip_scale(self, k: Optional[int]) -> float:
         """A gel's stretch in the figure; 1 for the gel with the lanes (k None), which isn't stretched."""
@@ -771,6 +1109,8 @@ class Workspace(QObject):
 
     def live_strip_shift(self, k: Optional[int], v: float) -> None:
         """Live, while a gel is dragged sideways (k None = the gel with the lanes)."""
+        if k is None and self.project.is_side_by_side:
+            return
         if k is None or 1 <= k <= len(self.project.strips):
             self.live(lambda p: ops.place_gel(p, k, v))
 
@@ -781,6 +1121,14 @@ class Workspace(QObject):
         sc = self.strip_scale(k)
         self.edit("Nudge Gel", lambda p: ops.place_gel(
             p, k, (p.effective_main_shift if k is None else p.strips[k - 1].shift) - sc * dx))
+
+    def nudge_active_gel_rows(self, dy: float) -> None:
+        """Moves the chosen gel's picture dy figure rows down (up when negative) against the gel with the lanes, side by side."""
+        k = self.active_strip
+        if k is None or not self.project.is_side_by_side:
+            return
+        sc = self.strip_scale(k)
+        self.edit("Nudge Gel", lambda p: ops.place_gel(p, k, p.strips[k - 1].shift - sc * dy))
 
     def live_strip_rows(self, top: float, bottom: float) -> None:
         """Live, while only the chosen gel's rows are dragged: whole rows inside the gel, at least 8 of them. A drag that
@@ -906,21 +1254,23 @@ class Workspace(QObject):
 
     @property
     def geometry(self):
-        return ops.geometry(self.project, self.image_w, self.image_h)
+        w, h = self.lane_gel_size
+        return ops.geometry(self.project, w, h, self.lane_gel)
 
     @property
     def measured_background(self) -> int:
         return int(sround(self.working.background * 255)) if self.working else 255
 
     def _sync(self, p: GelProject) -> None:
-        p.sync_lane_centers(self.image_w, self.image_h)
+        w, h = self.lane_gel_size
+        p.sync_lane_centers(w, h, self.lane_gel)
 
     # ------------------------------------------------------------------------------------------------ tools
 
     def set_tool(self, t: str) -> None:
         self.tool_note = None
-        if t == "lanes" and self.views_other_gel:   # another gel's view: the dividers are the lanes gel's
-            self.tool_note = f"Lane dividers are set on {self.gel_name(None)}, the gel with the lanes."
+        if t == "lanes" and self.lanes_tool_off:   # another gel's view: the dividers are the lanes gel's
+            self.tool_note = self.lanes_tool_note
             self.message.emit(self.tool_note)
             t = "select"
         if t == self.tool:
@@ -954,20 +1304,24 @@ class Workspace(QObject):
     # ------------------------------------------------------------------------------------------------ lanes
 
     def add_divider(self, x: float, y: float) -> None:
-        self.edit("Add Lane Divider", lambda p: ops.add_divider(p, x, y, self.image_w, self.image_h))
+        w, h = self.lane_gel_size
+        gel = self.lane_gel
+        self.edit("Add Lane Divider", lambda p: ops.add_divider(p, x, y, w, h, gel))
 
     def drag_divider(self, i: int, start: LaneDivider, kind: str, a: float, b: float = 0.0) -> None:
         """Live: kind "move" (dx=a, dot_y=b), "top" or "bottom" (x=a). Dragging one end keeps the other visible end
         (at the crop's top or bottom row) in place."""
-        H = float(self.image_h)
-        ya, yb = self.crop.y0, self.crop.y1
+        H = float(self.lane_gel_size[1])
+        ya, yb = self.lane_rows
+        gel = self.lane_gel
 
         def line(xa, y_a, xb, y_b):
             m = 0 if abs(y_b - y_a) < 1e-6 else (xb - xa) / (y_b - y_a)
             return xa - m * y_a, xa + m * (H - y_a)
 
         def fn(p):
-            if i >= len(p.lanes.dividers):
+            dividers = p.lanes_of(gel).dividers
+            if i >= len(dividers):
                 return
             d = LaneDivider(start.x_top, start.x_bottom, start.dot_y)
             if kind == "move":
@@ -978,14 +1332,14 @@ class Workspace(QObject):
                 d.x_top, d.x_bottom = line(a, ya, start.x_at(yb, H), yb)
             else:
                 d.x_top, d.x_bottom = line(start.x_at(ya, H), ya, a, yb)
-            p.lanes.dividers[i] = d
+            dividers[i] = d
             self._sync(p)
         self.live(fn)
 
     def end_divider_drag(self, i: Optional[int] = None) -> Optional[int]:
         """The drag of divider i is over: the dividers are put in order again, and it's one undo step. Returns where
         divider i is now (the order may have changed under it)."""
-        dividers = self.project.lanes.dividers
+        dividers = self.lane_set.dividers
         moved = dividers[i] if i is not None and i < len(dividers) else None
         if self._gesture_start is not None:
             dividers.sort(key=lambda d: d.x_top + d.x_bottom)
@@ -996,23 +1350,34 @@ class Workspace(QObject):
         return i
 
     def delete_divider(self, i: int) -> None:
+        gel = self.lane_gel
+
         def fn(p):
-            if i < len(p.lanes.dividers):
-                del p.lanes.dividers[i]
+            dividers = p.lanes_of(gel).dividers
+            if i < len(dividers):
+                del dividers[i]
                 self._sync(p)
         self.edit("Delete Lane Divider", fn)
         self.selection = None
 
     def clear_dividers(self) -> None:
+        gel = self.lane_gel
+
         def fn(p):
-            p.lanes.dividers.clear()
-            p.lanes.centers.clear()
+            l = p.lanes_of(gel)
+            l.dividers.clear()
+            l.centers.clear()
+            p.set_lanes_of(l, gel)
         self.edit("Clear Lane Dividers", fn)
         self.selection = None
 
     def set_outer_lanes(self, on: bool) -> None:
+        gel = self.lane_gel
+
         def fn(p):
-            p.lanes.outer_lanes = on
+            l = p.lanes_of(gel)
+            l.outer_lanes = on
+            p.set_lanes_of(l, gel)
             self._sync(p)
         self.edit("Edge Lanes", fn)
 
@@ -1051,7 +1416,7 @@ class Workspace(QObject):
     def add_tick(self, x: float, y: float, strip: Optional[int] = None) -> int:
         """A tick at y in its gel's own pixels (strip None = the gel with the lanes); x is the figure x clicked."""
         g = self.geometry
-        lane = g.lane_at(x, y if strip is None else self.crop.y0) if g else None
+        lane = None if self.project.is_side_by_side else (g.lane_at(x, y if strip is None else self.crop.y0) if g else None)
         y = self.clamp_mark_y(y, strip)
         size = self.suggested_size(y, strip)
         pr = self.preset
@@ -1096,7 +1461,11 @@ class Workspace(QObject):
         if i >= len(bands):
             return
         k = bands[i].strip
-        if k is None:
+        if self.stack is not None and self.stack.side_by_side and self.stack.piece(k) is not None:   # snaps in that gel's own ladder lane
+            q = self.stack.piece(k)
+            own = self.project.ladder_lane_x(k, self.project.ladder.lane if self.project.ladder else 1)
+            self.move_tick(i, self._snapped_in(q, q.to_figure(own[0], 0)[0] if own else x, fy, free))
+        elif k is None:
             self.move_tick(i, self.snapped_y(x, fy, free))
         elif self.stack and self.stack.piece(k):
             self.move_tick(i, self._snapped_in(self.stack.piece(k), x, fy, free))
@@ -1231,7 +1600,10 @@ class Workspace(QObject):
         """Figure row fy as a row of the gel it falls in: that gel (None = the one with the lanes) and the row in its own
         pixels, kept inside the rows it shows. The unit label goes with its gel."""
         g = self.stack
-        q = g.piece_at_figure_y(fy) if (g and g.has_strips) else None
+        if g is not None and g.side_by_side:   # the unit label goes with the gel the figure's ladder sizes come from
+            q = next((q for q in g.pieces if self.project.is_ladder_label_gel(q.strip)), None)
+        else:
+            q = g.piece_at_figure_y(fy) if (g and g.has_strips) else None
         if q is None or q.strip is None:
             return None, self.clamp_mark_y(float(sround(fy)), None)
         return q.strip, self.clamp_mark_y(float(sround(q.to_piece(0, fy)[1])), q.strip)
@@ -1269,8 +1641,15 @@ class Workspace(QObject):
         """Live, while name i is dragged to figure row fy, snapping at figure column x: it stays in its own gel."""
         if i >= len(self.project.annotations):
             return
-        k = self.project.annotations[i].strip
-        if k is None:
+        a = self.project.annotations[i]
+        k = a.strip
+        if self.stack is not None and self.stack.side_by_side and self.stack.piece(k) is not None:
+            # snaps in the lane of that gel next to the edge the name is on
+            q = self.stack.piece(k)
+            c = self.project.lanes_of(k).centers
+            own = (c[0] if c else None) if a.side == "left" else (c[-1] if c else None)
+            self.move_name(i, self._snapped_in(q, q.to_figure(own, 0)[0] if own is not None else x, fy, free))
+        elif k is None:
             self.move_name(i, self.snapped_y(x, fy, free))
         elif self.stack and self.stack.piece(k):
             self.move_name(i, self._snapped_in(self.stack.piece(k), x, fy, free))
@@ -1737,15 +2116,18 @@ class Workspace(QObject):
 
     def export_info(self, resampled: Optional[float] = None) -> render.ExportInfo:
         """The provenance note of the figure as it exports. Raises ImageError while a gel's image can't be read."""
+        self.settle()
         why = self.unreadable_gel
         if why:
             raise ImageError(why)
         gels = [(w.source.sha256, w.source.scale, (w.width, w.height)) for w in self.strip_workings]
+        srcs = [self.source] + [w.source if w else None for w in self.strip_workings]
         return render.export_info(self.project, self.source.sha256 if self.source else None, resampled,
                                   render.native_dpi(self.layout) if (resampled and self.layout) else None,
                                   self.source.scale if self.source else None, gels, (self.image_w, self.image_h),
-                                  stacked.converted_storage(self.project, [self.source] + [w.source if w else None for w in self.strip_workings]),
-                                  self.changed_warnings(self.project.export_file_names))
+                                  stacked.converted_storage(self.project, srcs),
+                                  self.changed_warnings(self.project.export_file_names),
+                                  stacked.unconverted_gels(self.project, srcs), stacked.copied_gels(self.project, srcs))
 
     @property
     def export_problem(self) -> Optional[str]:
@@ -1762,6 +2144,7 @@ class Workspace(QObject):
         """The whole figure, every gel included. Raises ImageError while a gel's image can't be read, and ValueError when
         Strict can't stack the gels untouched."""
         self.finish_quick_labels(normalize=False)
+        self.settle()   # exports wait for the exact pixels of an angle that is only being previewed
         if self.unreadable_gel:
             raise ImageError(self.unreadable_gel)
         if self.export_problem:

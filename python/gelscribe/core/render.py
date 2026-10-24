@@ -75,15 +75,23 @@ def changed_warnings(p: GelProject, shas: list, names: bool = True) -> list[str]
     return out
 
 
+COPIED_NOTE = "original values, copied to all three channels"
+
+
 def export_info(p: GelProject, source_sha256: Optional[str], resampled_dpi: Optional[float] = None,
                 native_dpi: Optional[float] = None, scale: Optional[ValueScale] = None,
                 strips: list = (), size: Optional[tuple[int, int]] = None, storage: Optional[str] = None,
-                changed: list = ()) -> ExportInfo:
+                changed: list = (), unconverted: list = (),
+                copied: list = ()) -> ExportInfo:
     """strips: each stacked gel's (sha256, value scale) or (sha256, value scale, (width, height)), in strips order. size:
     the working image's width and height, and likewise each gel's, so the note can give the crop and rows that were
     actually used (clamped to the image); without them it gives them as stored. storage: the format the gels that
     don't keep their original pixels are converted to (strips.converted_storage): that of the ones kept when some do
-    ("16-bit gray"), else "8-bit gray" or "8-bit RGB". changed: the lines of changed_warnings, which the note starts with."""
+    ("16-bit gray"), else "8-bit gray" or "8-bit RGB"; for a single adjusted colour image "8-bit RGB" when it was not
+    that already. changed: the lines of changed_warnings, which the note starts with. unconverted: the gels (0 the one with
+    the lanes, then the stacked ones) that were in storage's format already, which the note doesn't say were converted.
+    copied: the gels that keep their original gray values in a colour figure, which the note says are copied to all three
+    channels."""
     if p.crop is None:
         c = "full frame"
     else:
@@ -103,6 +111,8 @@ def export_info(p: GelProject, source_sha256: Optional[str], resampled_dpi: Opti
                 + (", inverted" if p.display.invert else ""))
     keeps = [p.is_strict(k) for k in [None, *range(1, len(p.strips) + 1)]]   # the lanes gel, then the others
     mixed = any(keeps) and not all(keeps)   # the lanes gel's setting alone says nothing about the others
+    if storage and not p.strips and not p.strict:   # an adjusted colour image stored as 8-bit RGB
+        adjusted = adjusted + f", converted to {storage}"
     pixels = (MIXED_PIXELS if mixed else
               f"Gel pixels: original values, bit depth and color space, not resampled (strict); {c}." if p.strict
               else f"Gel pixels: adjusted ({adjusted}); {c}.")
@@ -119,12 +129,12 @@ def export_info(p: GelProject, source_sha256: Optional[str], resampled_dpi: Opti
         ladder = f" Ladder: {p.ladder.name}" + (f", apparent sizes for {p.ladder.system}" if p.ladder.system else "") + "."
     pieces = ""
     if p.strips:
-        pieces = f" {len(p.strips) + 1} separately scanned gels, top to bottom, with a {p.separator} line between each:"
+        pieces = f" {len(p.strips) + 1} separately scanned gels, {"left to right" if p.is_side_by_side else "top to bottom"}, with a {p.separator} line between each:"
         # what converting into the output's storage did: 8-bit values times 257 for 16-bit
         conversion = f"converted to {storage}" + (" (values times 257)" if storage.startswith("16-bit") else "") if storage else None
         for n, k in enumerate(p.stack_order):
             if k is None:
-                main = "as above (its lanes are the figure's)"
+                main = "the reference for vertical placement" if p.is_side_by_side else "as above (its lanes are the figure's)"
                 if mixed and p.turn % 4:   # the headline that said so is the mixed one now
                     main += f", turned {p.turn % 4 * 90}°"
                 if mixed and not p.strict:   # and so is the one that said what was done to this gel's pixels
@@ -132,10 +142,12 @@ def export_info(p: GelProject, source_sha256: Optional[str], resampled_dpi: Opti
                 if size is not None:   # the kept rectangle, as the figure took it
                     r = p.effective_crop(*size)
                     main += f", columns {int(r.x0)}–{int(r.x1)}, rows {int(r.y0)}–{int(r.y1)}"
-                if p.effective_main_shift != 0:
+                if p.effective_main_shift != 0 and not p.is_side_by_side:
                     main += f", shifted {format_size(p.effective_main_shift)} px"
-                if not p.strict and conversion:
+                if not p.strict and conversion and 0 not in unconverted:
                     main += f", {conversion}"
+                if p.strict and 0 in copied:
+                    main += f", {COPIED_NOTE}"
                 pieces += f" {n + 1}. {p.image}, {main};" if names else f" {n + 1}. {main};"
                 continue
             i, s = k - 1, p.strips[k - 1]
@@ -155,9 +167,10 @@ def export_info(p: GelProject, source_sha256: Optional[str], resampled_dpi: Opti
                 def edge(v, none):
                     return none if v is None or not math.isfinite(v) else max(0, int(sround(v)))
                 parts.append(f"columns {edge(s.left, 'crop')}–{edge(s.right, 'crop')}, rows {edge(s.top, 0)}–{edge(s.bottom, 'end')}")
-            parts.append(f"shifted {format_size(shift)} px")
+            parts.append(f"shifted {format_size(shift)} px{' vertically' if p.is_side_by_side else ''}")
             if sc != 1:
-                parts.append(f"stretched (scaled {sc:.4f}×)")
+                parts.append(f"sized {sc:.4f}× in both directions (resampled)" if p.is_side_by_side
+                             else f"stretched (scaled {sc:.4f}×)")
             vs = strips[i][1] if i < len(strips) else None
             if not keep:   # brightness & contrast only reach the pixels of a gel that doesn't keep its original ones
                 if vs is not None:
@@ -167,8 +180,10 @@ def export_info(p: GelProject, source_sha256: Optional[str], resampled_dpi: Opti
                     parts.append(f"gamma {float(s.display.gamma)}")
                 if s.display.invert:
                     parts.append("inverted")
-                if conversion:
+                if conversion and k not in unconverted:
                     parts.append(conversion)
+            if keep and k in copied:
+                parts.append(COPIED_NOTE)
             h = f" sha256 {strips[i][0]}" if i < len(strips) and strips[i][0] else ""
             label = f"{s.image}{h}" if names else h.strip()
             pieces += f" {n + 1}. {label + ', ' if label else ''}{', '.join(parts)};"

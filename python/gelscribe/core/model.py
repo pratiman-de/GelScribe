@@ -891,6 +891,10 @@ def separator_gray(colour: str) -> int:
 # ---------------------------------------------------------------------------------------------------- stacked gels
 
 
+#: the sizes a gel may be given against the gel with the lanes when the gels sit side by side (GelStrip.scale)
+SIDE_SCALES = (0.01, 100.0)
+
+
 @dataclass
 class GelStrip:
     """Another gel in the figure, scanned on its own: a piece of a membrane cut to probe different antibodies, or the
@@ -921,6 +925,16 @@ class GelStrip:
     #: keep original pixels for this gel: None = the same as the gel with the lanes (what projects without a value of
     #: their own mean), True = whole-pixel shifts only and no stretch or rotation, False = it may be stretched and rotated
     strict: Optional[bool] = None
+    #: this gel's own lanes, in its own pixels, used when the gels sit side by side (JSON "lanes", left out when it has none);
+    #: kept in the file, unused, while the gels are stacked top to bottom
+    lanes: Optional[Lanes] = None
+
+    def side_columns(self, width: int) -> tuple[float, float]:
+        """Kept columns side by side: its own, whole pixels inside the image (width wide), the whole width where none are set."""
+        w = float(max(width, 1))
+        l = min(max(sround(self.left), 0.0), w - 1) if self.left is not None and math.isfinite(self.left) else 0.0
+        r = min(max(sround(self.right), l + 1), w) if self.right is not None and math.isfinite(self.right) else w
+        return l, max(r, l + 1)
 
     def used_rows(self, height: int) -> tuple[float, float]:
         """The rows of this gel that go into the figure, as whole pixels with 0 <= top < bottom <= height (the gel's
@@ -959,12 +973,14 @@ class GelStrip:
             left, follows_left = 0.0, False
         return left, right, follows_left, follows_right
 
-    def sanitize(self) -> None:
+    def sanitize(self, scales: tuple[float, float] = (0.5, 2.0)) -> None:
         self.turn %= 4
         self.rotate_deg = _clamp(self.rotate_deg, -360, 360, 0.0)
         self.display.sanitize()
+        if self.lanes is not None:
+            self.lanes.sanitize()
         self.shift = _clamp(self.shift, -Sane.coordinate, Sane.coordinate, 0.0)
-        self.scale = _clamp(self.scale, 0.5, 2, 1.0)
+        self.scale = _clamp(self.scale, scales[0], scales[1], 1.0)   # side by side a gel may be sized much more
         # rows that aren't 0 <= top < bottom mean the whole gel
         t = 0.0 if self.top is None else self.top
         if self.bottom is not None:
@@ -999,6 +1015,8 @@ class GelStrip:
             d["own_ladder"] = True
         if self.strict is not None:
             d["strict"] = self.strict
+        if self.lanes is not None:
+            d["lanes"] = self.lanes.to_json()
         return d
 
     @staticmethod
@@ -1013,7 +1031,8 @@ class GelStrip:
                         _num(d.get("top"), f"{what}.top"), _num(d.get("bottom"), f"{what}.bottom"),
                         _num(d.get("left"), f"{what}.left"), _num(d.get("right"), f"{what}.right"),
                         _num(d.get("shift"), f"{what}.shift", 0.0), _num(d.get("scale"), f"{what}.scale", 1.0),
-                        _flag(d.get("own_ladder"), f"{what}.own_ladder", False), _opt_flag(d.get("strict"), f"{what}.strict"))
+                        _flag(d.get("own_ladder"), f"{what}.own_ladder", False), _opt_flag(d.get("strict"), f"{what}.strict"),
+                        None if d.get("lanes") is None else Lanes.from_json(d.get("lanes"), f"{what}.lanes"))
 
 
 # ---------------------------------------------------------------------------------------------------- project
@@ -1047,6 +1066,10 @@ class GelProject:
     turn: int = 0
     #: more gels in the same figure, stacked top to bottom in this order with a line between each (see GelStrip)
     strips: list[GelStrip] = field(default_factory=list)
+    #: how the gels sit in the figure: "top_to_bottom" (the default, left out of the file) or "side_by_side", left to right in
+    #: stack order, each gel with its own lanes and a vertical placement against the gel with the lanes (GelStrip.shift and
+    #: scale then act vertically). See is_side_by_side.
+    arrangement: str = "top_to_bottom"
     #: where this image, the gel whose lanes every gel shares, sits among strips, counted from the top: 0 = above all
     main_position: int = 0
     #: this image's ladder sizes start again from the top of the list instead of carrying on from the gel above (see
@@ -1123,6 +1146,8 @@ class GelProject:
 
     def has_own_ladder(self, strip: Optional[int]) -> bool:
         """Whether gel strip (None = the one with the lanes) is marked as having its own ladder."""
+        if self.is_side_by_side:
+            return True   # every gel next to another has a ladder of its own
         if strip is None:
             return self.own_ladder
         return 1 <= strip <= len(self.strips) and self.strips[strip - 1].own_ladder
@@ -1252,7 +1277,11 @@ class GelProject:
         """What lines gel k up, after its Strict setting has had its say: whole-pixel shifts and no stretching while it
         keeps original pixels."""
         s = self.strips[k - 1]
-        return (sround(s.shift), 1.0) if self.is_strict(k) else (s.shift, s.scale if s.scale > 0 else 1.0)
+        # numbers that aren't sane never reach the stacking: no shift, no stretch
+        shift = min(max(s.shift, -Sane.coordinate), Sane.coordinate) if math.isfinite(s.shift) else 0.0
+        lo, hi = SIDE_SCALES if self.is_side_by_side else (0.5, 2.0)   # side by side a photo and a small scan can differ a lot in size
+        scale = min(max(s.scale, lo), hi) if math.isfinite(s.scale) and s.scale > 0 else 1.0
+        return (sround(shift), 1.0) if self.is_strict(k) else (shift, scale)
 
     def lane_alignment(self, k: int) -> tuple[float, float]:
         """What lines gel k up with the gel with the lanes wherever that sits: x in the gel = scale × x in the lanes gel +
@@ -1273,6 +1302,8 @@ class GelProject:
         w = float(max(width, 1))
         if not 1 <= k <= len(self.strips):
             return 0.0, w
+        if self.is_side_by_side:
+            return self.strips[k - 1].side_columns(width)   # its own columns: nothing to follow
         shift, scale = self.lane_alignment(k)
         left, right, _, _ = self.strips[k - 1].columns(width, self.effective_crop(main_width, main_height), shift, scale)
         if not (math.isfinite(left) and math.isfinite(right)):
@@ -1282,7 +1313,116 @@ class GelProject:
 
     @property
     def lane_count(self) -> int:
+        """The lanes in the figure: the lanes gel's, or side by side all gels' together, numbered continuously from the left."""
+        if self.is_side_by_side:
+            return sum(len(self.lanes_of(g).centers) for g in self.stack_order)
         return len(self.lanes.centers)
+
+    # -- side by side
+
+    @property
+    def is_side_by_side(self) -> bool:
+        """Whether the gels sit side by side: that arrangement, and more than one gel (one gel is the same either way)."""
+        return self.arrangement == "side_by_side" and bool(self.strips)
+
+    def lanes_of(self, gel: Optional[int] = None) -> Lanes:
+        """Gel k's own lanes (None = the gel with the lanes): a gel with none has no lanes yet."""
+        if gel is None:
+            return self.lanes
+        return (self.strips[gel - 1].lanes or Lanes()) if 1 <= gel <= len(self.strips) else Lanes()
+
+    def set_lanes_of(self, lanes: Lanes, gel: Optional[int] = None) -> None:
+        if gel is None:
+            self.lanes = lanes
+        elif 1 <= gel <= len(self.strips):
+            self.strips[gel - 1].lanes = lanes
+
+    def lane_slot(self, n: int) -> Optional[tuple[Optional[int], int]]:
+        """Continuous lane n (1-based, left to right across the figure) as (gel, that gel's own lane number)."""
+        if n < 1:
+            return None
+        if not self.is_side_by_side:
+            return (None, n) if n <= len(self.lanes.centers) else None
+        before = 0
+        for g in self.stack_order:
+            c = len(self.lanes_of(g).centers)
+            if n <= before + c:
+                return g, n - before
+            before += c
+        return None
+
+    def continuous_lane(self, gel: Optional[int], lane: int) -> Optional[int]:
+        """The continuous number of gel k's own lane."""
+        if not self.is_side_by_side:
+            return lane if gel is None and 1 <= lane <= len(self.lanes.centers) else None
+        before = 0
+        for g in self.stack_order:
+            c = len(self.lanes_of(g).centers)
+            if g == gel:
+                return before + lane if 1 <= lane <= c else None
+            before += c
+        return None
+
+    def lane_numbers(self, gel: Optional[int] = None) -> range:
+        """The continuous numbers of the lanes gel k has (empty when it has none)."""
+        c = len(self.lanes_of(gel).centers)
+        if not self.is_side_by_side:
+            return range(1, c + 1) if gel is None else range(1, 1)
+        before = 0
+        for g in self.stack_order:
+            if g == gel:
+                return range(before + 1, before + 1 + c)
+            before += len(self.lanes_of(g).centers)
+        return range(1, 1)
+
+    def main_lane_info(self, n: int) -> Optional[tuple[float, float]]:
+        """Lane n (continuous) as a lane of the gel with the lanes: its centre and width in that gel's own pixels. None when
+        there is no such lane, or (side by side) it belongs to another gel."""
+        s = self.lane_slot(n)
+        if s is None or s[0] is not None:
+            return None
+        return self.lanes.centers[s[1] - 1], self.lanes.width
+
+    def ladder_lane_x(self, gel: Optional[int], lane: int) -> Optional[tuple[float, float]]:
+        """Side by side: where the ticks of gel k (None = the gel with the lanes) snap to, as x in that gel's own pixels. Each gel
+        has its ladder in the lane with the same place on that gel as the ladder lane has on its own (lane 2 of its gel, say)."""
+        l = self.lanes_of(gel)
+        s = self.lane_slot(lane)
+        local = s[1] if s else 1
+        return (l.centers[local - 1], l.width) if 1 <= local <= len(l.centers) else None
+
+    def main_lane_problem(self, n: int) -> str:
+        """The message for a lane number that main_lane_info can't give, for tools that only work on the gel with the lanes."""
+        s = self.lane_slot(n)
+        if s is None:
+            return f"lane {n} doesn't exist (have {self.lane_count})"
+        r = self.lane_numbers(None)
+        return (f"lane {n} is on gel {self.position_of(s[0]) + 1}; this tool reads the gel with the lanes "
+                f"(lanes {r.start} to {r.stop - 1})")
+
+    def is_ladder_label_gel(self, gel: Optional[int]) -> bool:
+        """Side by side, whether gel g is the one the figure's ladder size labels come from: the leftmost gel with ladder ticks
+        that have sizes. (Ticks on the other gels only guide the alignment.)"""
+        if not self.is_side_by_side or self.ladder is None:
+            return True
+        for s in self.stack_order:   # (None is a gel here, the one with the lanes)
+            if any(b.strip == s and not b.ignore and b.size is not None for b in self.ladder.bands):
+                return s == gel
+        return True
+
+    def figure_lanes(self, stack) -> tuple[list[Optional[float]], float]:
+        """Every lane's centre in figure pixels, in continuous order (None for a lane outside its gel's kept columns, or on a gel
+        that isn't in the figure), and a lane's width for group lines. Needs the stack for where each gel sits."""
+        out: list[Optional[float]] = []
+        widths: list[float] = []
+        for g in self.stack_order:
+            l = self.lanes_of(g)
+            piece = stack.piece(g)
+            for c in l.centers:
+                out.append(piece.to_figure(c, 0)[0] if piece is not None and piece.source_left <= c <= piece.source_right else None)
+            if l.centers:
+                widths.append(l.width / (piece.scale if piece is not None else 1))   # in figure pixels
+        return out, (sum(widths) / len(widths) if widths else self.lanes.width)
 
     @property
     def label_angle(self) -> float:
@@ -1311,16 +1451,19 @@ class GelProject:
         r = (self.crop or PixelRect(0, 0, w, h)).normalized(w, h)
         return PixelRect(math.floor(r.x0), math.floor(r.y0), math.ceil(r.x1), math.ceil(r.y1)).normalized(w, h)
 
-    def sync_lane_centers(self, w: int, h: int) -> None:
-        """Recomputes lanes.centers (at the gel's top edge) and lanes.width from the dividers."""
-        g = LaneGeometry.resolve(self.lanes, float(w), float(h))
+    def sync_lane_centers(self, w: int, h: int, gel: Optional[int] = None) -> None:
+        """Recomputes lanes.centers (at the gel's top edge) and lanes.width from the dividers. gel: a gel's number works on
+        that gel's own lanes (side by side), at the top of its kept rows."""
+        lanes = self.lanes_of(gel)
+        g = LaneGeometry.resolve(lanes, float(w), float(h))
         if g is None:
             return
-        top = self.effective_crop(w, h).y0
-        self.lanes.centers = [sround(g.center(i + 1, top) * 10) / 10 for i in range(g.count)]
+        top = self.strips[gel - 1].used_rows(h)[0] if gel is not None else self.effective_crop(w, h).y0
+        lanes.centers = [sround(g.center(i + 1, top) * 10) / 10 for i in range(g.count)]
         widths = sorted(g.x(g.boundaries[i + 1], top) - g.x(g.boundaries[i], top) for i in range(g.count))
         if widths:
-            self.lanes.width = sround(widths[len(widths) // 2] * 0.85)
+            lanes.width = sround(widths[len(widths) // 2] * 0.85)
+        self.set_lanes_of(lanes, gel)
 
     # -- loading
 
@@ -1345,7 +1488,7 @@ class GelProject:
         for r in self.rows:
             r.sanitize()
         for s in self.strips:
-            s.sanitize()
+            s.sanitize(SIDE_SCALES if self.arrangement == "side_by_side" else (0.5, 2.0))
         n = len(self.strips)
         if self.ladder is not None:
             self.ladder.sanitize(n)
@@ -1384,6 +1527,8 @@ class GelProject:
             d["turn"] = self.turn % 4
         if self.strips:
             d["strips"] = [s.to_json() for s in self.strips]
+        if self.arrangement != "top_to_bottom":
+            d["arrangement"] = self.arrangement
         if self.main_slot != 0:
             d["main_position"] = self.main_slot
         if self.own_ladder:
@@ -1421,6 +1566,7 @@ class GelProject:
             annotations=[BandAnnotation.from_json(a, f"annotations[{i}]") for i, a in enumerate(_list(d.get("annotations"), "annotations"))],
             style=FigureStyle.from_json(d.get("style"), "style"), turn=_int(d.get("turn"), "turn", 0) % 4,
             strips=[GelStrip.from_json(s, f"strips[{i}]") for i, s in enumerate(_list(d.get("strips"), "strips"))],
+            arrangement="side_by_side" if d.get("arrangement") == "side_by_side" else "top_to_bottom",
             main_position=_int(d.get("main_position"), "main_position", 0),
             own_ladder=_flag(d.get("own_ladder"), "own_ladder", False),
             main_shift=_num(d.get("main_shift"), "main_shift", 0.0),

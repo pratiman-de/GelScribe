@@ -284,14 +284,21 @@ def layout(p: GelProject, image_width: int, image_height: int, stack=None) -> Fi
         return (py - crop.y0) * s
 
     centers = p.lanes.centers
+    # side by side: one row of lanes across every gel, numbered from the left
+    across = p.figure_lanes(stack) if stack is not None and stack.side_by_side else None
 
     def lane_x(n: int) -> Optional[float]:
+        if across is not None:
+            if 1 <= n <= len(across[0]):
+                v = across[0][n - 1]
+                return None if v is None else X(v)
+            return None
         if n < 1 or n > len(centers):
             return None
         c = centers[n - 1]
         return X(c) if crop.x0 <= c <= crop.x1 else None
 
-    lane_half = p.lanes.width * s / 2
+    lane_half = (across[1] if across is not None else p.lanes.width) * s / 2
 
     def text(string: str, f: FontSpec, at: tuple[float, float], align: str, rotation: float = 0.0,
              role: Role = TITLE, anchor: str = "bottom") -> FigureText:
@@ -436,7 +443,7 @@ def layout(p: GelProject, image_width: int, image_height: int, stack=None) -> Fi
         right = ladder.side == "right"
         edge = gel_w if right else 0
         d = 1 if right else -1
-        marks = sorted(((i, b, fy) for i, b in enumerate(ladder.bands) if not b.ignore and b.size is not None
+        marks = sorted(((i, b, fy) for i, b in enumerate(ladder.bands) if not b.ignore and b.size is not None and p.is_ladder_label_gel(b.strip)
                         for fy in [figure_y(b.strip, b.y)] if fy is not None), key=lambda ibf: ibf[2])
         band_y = [Y(fy) for _, _, fy in marks]
         label_y = spread_1d(band_y, f.size * st.label_sep)

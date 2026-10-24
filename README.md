@@ -32,7 +32,8 @@ project files. There's nothing to install from here: on this page click Code ›
 The [tutorial](docs/tutorial.md) goes through one blot from scan to figure, with a screenshot for each step. The
 example image is in `docs/`, so you can follow along. The short version:
 
-1. Drop a PNG, TIFF or JPEG on the window. 32-bit and CMYK images are not supported.
+1. Drop a PNG, TIFF or JPEG on the window (the Mac app also opens HEIC). Color images stay in color. 32-bit and CMYK
+   images are not supported.
 2. Press L and click once in each gap between lanes.
 3. Type the lane labels into Quick labels in the Aa tab, for example `µM: |0{L|P}|10{L|P}|25{L|P}`, or enter them
    one at a time in the fields below it.
@@ -56,6 +57,8 @@ finds each gel's lanes and lines them up with the first gel's. A switcher above 
 gel on its own, and the tools work on the gel that is chosen. Each gel keeps its own crop (on all four sides),
 brightness and contrast, rotation, ladder ticks, band names and Keep original pixels switch. You can move any gel by
 hand or drag the gels into another order, and you can drop several images on an empty window to start with all of them.
+Gels can also sit side by side, for example separately run radioactive gels: each gel then has its own lanes, one row
+of lane labels runs across all of them, and GelScribe lines them up by their ladder bands and sizes them to match.
 The [tutorial for multi-gel figures](docs/multi-gel.md) starts with how to scan and export the pieces, then goes through
 a membrane cut in two.
 
