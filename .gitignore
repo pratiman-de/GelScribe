@@ -12,6 +12,11 @@ python/.venv/
 python/python.txt
 python/requirements.used
 python/GelScribe.lnk
+
+# Windows .exe build (python/build-exe.bat): the private build Python, PyInstaller's scratch folder and the output
+python/build/venv/
+python/build/work/
+python/dist/
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -25,3 +30,6 @@ GitHub uploads/
 
 # Built app zips for GitHub Releases (not part of the code)
 Release/
+
+# PyInstaller leftovers
+*.pyz

@@ -22,7 +22,12 @@ apps that aren't notarized. Run this once in Terminal, then open it as usual:
 xattr -dr com.apple.quarantine /Applications/GelScribe.app
 ```
 
-**Windows, Linux, and Intel or older Macs**: use the Python version, which has the same tools and reads the same
+**Windows**: download `GelScribe-Windows.zip` from [Releases](../../releases) when it's there, unzip it and run
+`GelScribe.exe`. There's nothing to install. Windows SmartScreen shows "Windows protected your PC" the first time,
+because the program isn't signed: click More info › Run anyway. `gelscribe-cli.exe` in the same folder is the
+[command-line tool](#command-line).
+
+**Linux, Intel or older Macs, and Windows without the zip**: use the Python version, which has the same tools and reads the same
 project files. There's nothing to install from here: on this page click Code › Download ZIP, unzip it, and open the
 `python` folder. Then open `GelScribe.bat` on Windows, `GelScribe.command` on a Mac or `GelScribe.sh` on Linux
 (Python 3.11 to 3.14). [Setting up the Python version](#setting-up-the-python-version).
@@ -217,13 +222,19 @@ cd mac
 That makes `mac/GelScribe.app`. `swift test` runs the tests; a few need a gel image that isn't in the repository and
 are skipped.
 
-The Python version has nothing to build. To run its tests, go to the `python` folder and use the Python GelScribe runs
+The Python version runs without a build (the .exe above is optional). To run its tests, go to the `python` folder and use the Python GelScribe runs
 from (its path is in `python.txt`; on Windows that's `pythonw.exe`, so use the `python.exe` next to it):
 
 ```bash
 python -m pip install pytest
 python -m pytest
 ```
+
+## Building the Windows .exe
+
+On a Windows PC, double-click `python\build-exe.bat`. It makes its own Python in `python\build\venv` (from a Python 3.11
+to 3.14 you already have, which it doesn't change), installs the requirements and PyInstaller there, and builds
+`python\dist\GelScribe-Windows.zip`. The first build takes a few minutes. The recipe is `python\build\GelScribe.spec`.
 
 ## Repository
 
