@@ -13,8 +13,10 @@ python/python.txt
 python/requirements.used
 python/GelScribe.lnk
 
-# Windows .exe build (python/build-exe.bat): the private build Python, PyInstaller's scratch folder and the output
+# Windows .exe build (python/build-exe.bat): the private build Python (downloaded by the script), PyInstaller's scratch folder and the output
 python/build/venv/
+python/build/python/
+python/build/python.zip
 python/build/work/
 python/dist/
 __pycache__/

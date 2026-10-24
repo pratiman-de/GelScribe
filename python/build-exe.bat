@@ -1,17 +1,19 @@
 @echo off
 rem Builds GelScribe-Windows.zip (GelScribe.exe, the app, and gelscribe-cli.exe, the command-line tool) on Windows,
 rem and GelScribe-Setup.exe, an installer, when Inno Setup 6 is installed.
-rem Double-click it. It never touches the Pythons you have: it makes its own Python in build\venv, installs what
-rem GelScribe needs there, runs PyInstaller with build\GelScribe.spec, and zips the result into dist\GelScribe-Windows.zip.
+rem Double-click it. It gets its own Python and never touches any other Python on the PC (Anaconda can't build the
+rem .exe: its copies of Windows DLLs clash with Qt's). On the first run it downloads python.org's official Python 3.13
+rem (the NuGet package, about 30 MB) into build\python, installs what GelScribe needs plus PyInstaller into it, runs
+rem PyInstaller with build\GelScribe.spec, and zips the result into dist\GelScribe-Windows.zip.
 rem Then, if Inno Setup 6 (free, https://jrsoftware.org/isdl.php) is installed, it makes dist\GelScribe-Setup.exe with build\GelScribe.iss.
-rem The first build downloads Qt and PyInstaller and takes a few minutes; later builds reuse build\venv.
+rem The first build downloads Python, Qt and PyInstaller and takes a few minutes; later builds reuse build\python.
 setlocal
 set "PIP_USER=0"
 set "PIP_DISABLE_PIP_VERSION_CHECK=1"
 set "PIP_REQUIRE_VIRTUALENV="
+set "PYTHONNOUSERSITE=1"
 set "PYTHONSAFEPATH=1"
 set "PYTHONUTF8=1"
-set "PY="
 set "SETUP="
 rem pushd, not cd: it also works from a network folder, and from a folder with spaces or non-ASCII letters in its name
 pushd "%~dp0" || goto nofolder
@@ -22,17 +24,18 @@ if not exist "build\GelScribe.spec" goto incomplete
 echo Building GelScribe for Windows. The first time takes a few minutes.
 echo.
 
-rem a private Python for the build, made from Python 3.11 to 3.14 (what GelScribe supports)
-if exist "build\venv\Scripts\python.exe" call :checkvenv
-if exist "build\venv\Scripts\python.exe" goto havevenv
-call :findpython
-if not defined PY goto nopython
-echo [1/5] Making a private build Python in python\build\venv, from: %PY%
-%PY% -m venv "build\venv" || goto failed
-:havevenv
-set "VPY=build\venv\Scripts\python.exe"
+rem the build Python is python.org's official Python from NuGet, in build\python: no venv, no other Python on the PC is used
+set "VPY=build\python\tools\python.exe"
+if exist "build\venv" echo build\venv is no longer used by this script and can be deleted.
+if exist "%VPY%" echo [1/5] Python is already in build\python.
+if not exist "%VPY%" call :getpython
+if not exist "%VPY%" goto nopython
 
-echo [2/5] Installing GelScribe's requirements and PyInstaller into build\venv only.
+echo [2/5] Installing GelScribe's requirements and PyInstaller into build\python only.
+"%VPY%" -m pip --version >nul 2>nul
+if errorlevel 1 "%VPY%" -m ensurepip --upgrade >nul
+"%VPY%" -m pip --version >nul 2>nul
+if errorlevel 1 goto failed
 "%VPY%" -m pip install --upgrade pip >nul 2>nul
 "%VPY%" -m pip install -r "requirements.txt" pyinstaller || goto failed
 
@@ -102,28 +105,13 @@ exit /b 0
 echo Inno Setup didn't make GelScribe-Setup.exe (the reason is above). The zip was made anyway.
 exit /b 0
 
-:findpython
-rem the first Python 3.11 to 3.14 found: python.org's py launcher (newest wanted first), then PATH. Never Anaconda or
-rem Miniconda: their own copies of Windows DLLs clash with Qt's, and the built app then can't start.
-call :try py -3.13
-call :try py -3.12
-call :try py -3.14
-call :try py -3.11
-call :try py -3
-call :try python
-call :try python3
-exit /b 0
-
-:try
-if defined PY exit /b 0
-%* -c "import sys, os; ok = (3, 11) <= sys.version_info[:2] <= (3, 14) and 'conda' not in sys.version.lower() and not os.path.isdir(os.path.join(sys.base_prefix, 'conda-meta')); sys.exit(0 if ok else 1)" >nul 2>nul && set "PY=%*"
-exit /b 0
-
-:checkvenv
-rem a build\venv that no longer runs, is too old or new, or was made from Anaconda or Miniconda is made again
-"build\venv\Scripts\python.exe" -c "import sys, os; ok = (3, 11) <= sys.version_info[:2] <= (3, 14) and 'conda' not in sys.version.lower() and not os.path.isdir(os.path.join(sys.base_prefix, 'conda-meta')); sys.exit(0 if ok else 1)" >nul 2>nul && exit /b 0
-echo The Python in build\venv can't be used (it was made from Anaconda or Miniconda, or no longer runs), making it again.
-rmdir /s /q "build\venv"
+:getpython
+rem downloads python.org's official Python once; a half-finished earlier try is removed first
+if exist "build\python.zip" del /q "build\python.zip"
+if exist "build\python" rmdir /s /q "build\python"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; try { $v = (Invoke-RestMethod -UseBasicParsing 'https://api.nuget.org/v3-flatcontainer/python/index.json').versions | Where-Object { $_ -notmatch '-' -and $_ -match '^3\.13\.[0-9.]+$' } | Sort-Object { [version]$_ } | Select-Object -Last 1; if (-not $v) { throw 'no stable Python 3.13 version found on NuGet' }; Write-Host ('[1/5] Getting Python ' + $v + ' from python.org''s NuGet package into build\python (once).'); Invoke-WebRequest -UseBasicParsing ('https://api.nuget.org/v3-flatcontainer/python/' + $v + '/python.' + $v + '.nupkg') -OutFile 'build\python.zip'; Expand-Archive -Path 'build\python.zip' -DestinationPath 'build\python' -Force; Remove-Item 'build\python.zip' -Force } catch { Write-Host ('Download failed: ' + $_.Exception.Message); exit 1 }"
+if errorlevel 1 exit /b 1
+if exist "build\python.zip" del /q "build\python.zip"
 exit /b 0
 
 :pause
@@ -132,16 +120,17 @@ if /i not "%~1"=="/nopause" pause
 exit /b 0
 
 :nopython
-echo No Python 3.11 to 3.14 from python.org was found. Anaconda and Miniconda can't build the .exe: their own copies
-echo of Windows DLLs clash with Qt's, so the app wouldn't start.
-echo Get Python 3.13 from https://www.python.org/downloads/ and on the installer's first screen tick
-echo "Add python.exe to PATH". Your own Pythons are only read, never changed. Then double-click build-exe.bat again.
+echo.
+echo Couldn't get Python from python.org (the reason is above). Is the PC connected to the internet?
+echo A firewall or proxy may be blocking api.nuget.org. Check the connection and double-click build-exe.bat again.
+echo No other Python on the PC is used, so nothing else is needed. If python.exe is missing in build\python\tools,
+echo delete the python\build\python folder and try again.
 goto stop
 
 :failed
 echo.
 echo The build didn't finish (the reason is above). If a download failed, check the internet connection.
-echo For a clean start, delete the python\build\venv and python\build\work folders and try again.
+echo For a clean start, delete the python\build\python and python\build\work folders and try again.
 goto stop
 
 :incomplete

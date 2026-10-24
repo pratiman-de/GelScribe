@@ -233,9 +233,11 @@ python -m pytest
 
 ## Building the Windows .exe
 
-On a Windows PC, double-click `python\build-exe.bat`. It makes its own Python in `python\build\venv` (from a Python 3.11
-to 3.14 you already have, which it doesn't change), installs the requirements and PyInstaller there, and builds
-`python\dist\GelScribe-Windows.zip`. The first build takes a few minutes. The recipe is `python\build\GelScribe.spec`.
+On a Windows PC, double-click `python\build-exe.bat`. Python is downloaded automatically into `python\build\python` on the
+first run (python.org's official Python 3.13, from its NuGet package) and nothing else on the PC is changed: no other
+Python is used, and Anaconda can't be used because its copies of Windows DLLs clash with Qt's. The script installs the
+requirements and PyInstaller into that Python and builds `python\dist\GelScribe-Windows.zip`. The first build takes a few
+minutes. The recipe is `python\build\GelScribe.spec`.
 
 If [Inno Setup 6](https://jrsoftware.org/isdl.php) (free, 6.3 or newer) is installed, the same script also makes the
 installer, `python\dist\GelScribe-Setup.exe`, from `python\build\GelScribe.iss`. Without Inno Setup it says so and
