@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 from gelscribe import __version__                  # 0.1.1
 
 WIN = sys.platform == "win32"
+NUMBERS = tuple((int(p) if p.isdigit() else 0) for p in (__version__.split(".") + ["0", "0", "0"])[:3]) + (0,)
 
 # A build Python made from Anaconda or Miniconda keeps the DLLs that Python's own modules load (libffi for ctypes,
 # which SciPy needs; OpenSSL for the update check; bz2, lzma, expat) in Library\bin, outside the venv, where
