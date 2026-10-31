@@ -302,6 +302,11 @@ struct AppCommands: Commands {
             Button("Bigger Text") { ws?.bumpText(0.5) }.keyboardShortcut(keys.shortcut(.biggerText))
             Button("Smaller Text") { ws?.bumpText(-0.5) }.keyboardShortcut(keys.shortcut(.smallerText))
             Text("Acts on the selected label, or all text when none is selected")
+            Divider()
+            Toggle("Flip Horizontally", isOn: Binding(get: { ws?.isFlipped(leftRight: true) ?? false }, set: { _ in ws?.flipActive(leftRight: true) }))
+                .disabled(ws?.imageReady != true)
+            Toggle("Flip Vertically", isOn: Binding(get: { ws?.isFlipped(leftRight: false) ?? false }, set: { _ in ws?.flipActive(leftRight: false) }))
+                .disabled(ws?.imageReady != true)
         }
         CommandMenu("Tools") {
             ForEach(Tool.allCases) { t in

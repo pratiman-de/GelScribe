@@ -21,6 +21,9 @@ public struct GelProject: Codable, Equatable, Sendable {
     /// Quarter turns clockwise (0…3) before anything else, for a scan made the wrong way round. Lossless: it only
     /// reorders pixels, so Strict allows it.
     public var turn: Int = 0
+    /// Mirrored left-right and/or top-bottom as the gel is shown, after the quarter turns (the membrane was turned over during
+    /// transfer). Lossless.
+    public var flip: GelFlip = .none
     public var rotateDeg: Double
     /// What rotation corners (and, with `fillPadding`, the old flat wedges) are painted with. Non-strict only.
     public var fillMode: FillMode
@@ -105,7 +108,7 @@ public struct GelProject: Codable, Equatable, Sendable {
         case fillPadding = "fill_padding"
         case rotateDeg = "rotate_deg"
         case fillMode = "fill_mode", fillValue = "fill_value", viewEnhance = "view_enhance"
-        case turn, strips, arrangement
+        case turn, flip, strips, arrangement
         case mainPosition = "main_position", mainShift = "main_shift", ownLadder = "own_ladder"
         case separator
         case separatorWidth = "separator_width"
@@ -131,6 +134,7 @@ public struct GelProject: Codable, Equatable, Sendable {
         annotations = try c.decodeIfPresent([BandAnnotation].self, forKey: .annotations) ?? []
         style = try c.decodeIfPresent(FigureStyle.self, forKey: .style) ?? .init()
         turn = ((try c.decodeIfPresent(Int.self, forKey: .turn) ?? 0) % 4 + 4) % 4
+        flip = GelFlip(json: try c.decodeIfPresent(String.self, forKey: .flip))
         strips = try c.decodeIfPresent([GelStrip].self, forKey: .strips) ?? []
         arrangement = (try? c.decodeIfPresent(Arrangement.self, forKey: .arrangement)) ?? .topToBottom
         mainPosition = try c.decodeIfPresent(Int.self, forKey: .mainPosition) ?? 0
@@ -161,6 +165,7 @@ public struct GelProject: Codable, Equatable, Sendable {
         try c.encode(annotations, forKey: .annotations)
         try c.encode(style, forKey: .style)
         if turn != 0 { try c.encode(turn, forKey: .turn) }
+        if flip != .none { try c.encode(flip.rawValue, forKey: .flip) }
         if !strips.isEmpty { try c.encode(strips, forKey: .strips) }
         if arrangement != .topToBottom { try c.encode(arrangement, forKey: .arrangement) }
         if mainSlot != 0 { try c.encode(mainSlot, forKey: .mainPosition) }
@@ -628,6 +633,8 @@ public struct GelStrip: Codable, Equatable, Sendable, Identifiable {
     public var imageSHA256: String?
     /// Quarter turns clockwise (0…3), for a piece scanned the wrong way round. Lossless.
     public var turn: Int
+    /// Mirrored as the piece is shown, after its quarter turns. Lossless.
+    public var flip: GelFlip = .none
     /// Straightening, degrees; resamples, so it only applies when Strict is off.
     public var rotateDeg: Double
     public var display: DisplaySettings
@@ -661,7 +668,7 @@ public struct GelStrip: Codable, Equatable, Sendable, Identifiable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case image, turn, display, top, bottom, left, right, shift, scale, strict, lanes
+        case image, turn, flip, display, top, bottom, left, right, shift, scale, strict, lanes
         case imageSHA256 = "image_sha256", rotateDeg = "rotate_deg", ownLadder = "own_ladder"
     }
     public init(from decoder: Decoder) throws {
@@ -669,6 +676,7 @@ public struct GelStrip: Codable, Equatable, Sendable, Identifiable {
         image = try c.decode(String.self, forKey: .image)
         imageSHA256 = try c.decodeIfPresent(String.self, forKey: .imageSHA256)
         turn = ((try c.decodeIfPresent(Int.self, forKey: .turn) ?? 0) % 4 + 4) % 4
+        flip = GelFlip(json: try c.decodeIfPresent(String.self, forKey: .flip))
         rotateDeg = try c.decodeIfPresent(Double.self, forKey: .rotateDeg) ?? 0
         display = try c.decodeIfPresent(DisplaySettings.self, forKey: .display) ?? .init()
         top = try c.decodeIfPresent(Double.self, forKey: .top)
@@ -686,6 +694,7 @@ public struct GelStrip: Codable, Equatable, Sendable, Identifiable {
         try c.encode(image, forKey: .image)
         try c.encodeIfPresent(imageSHA256, forKey: .imageSHA256)
         if turn != 0 { try c.encode(turn, forKey: .turn) }
+        if flip != .none { try c.encode(flip.rawValue, forKey: .flip) }
         try c.encode(rotateDeg, forKey: .rotateDeg)
         try c.encode(display, forKey: .display)
         try c.encodeIfPresent(top, forKey: .top)
@@ -699,7 +708,7 @@ public struct GelStrip: Codable, Equatable, Sendable, Identifiable {
         try c.encodeIfPresent(lanes, forKey: .lanes)
     }
     public static func == (a: GelStrip, b: GelStrip) -> Bool {
-        a.image == b.image && a.imageSHA256 == b.imageSHA256 && a.turn == b.turn && a.rotateDeg == b.rotateDeg &&
+        a.image == b.image && a.imageSHA256 == b.imageSHA256 && a.turn == b.turn && a.flip == b.flip && a.rotateDeg == b.rotateDeg &&
             a.display == b.display && a.top == b.top && a.bottom == b.bottom && a.left == b.left && a.right == b.right &&
             a.shift == b.shift && a.scale == b.scale &&
             a.ownLadder == b.ownLadder && a.strict == b.strict && a.lanes == b.lanes
@@ -834,6 +843,7 @@ extension GelProject {
         var p = GelProject(image: s.image, imageSHA256: s.imageSHA256, strict: isStrict(gel: k), fillPadding: fillPadding,
                            rotateDeg: s.rotateDeg, fillMode: fillMode, fillValue: fillValue, display: s.display)
         p.turn = s.turn
+        p.flip = s.flip
         return p
     }
 
@@ -1084,5 +1094,28 @@ extension GelProject {
         let e = JSONEncoder()
         e.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         return e
+    }
+}
+
+/// How a gel's pixels are mirrored, as shown, after its quarter turns (JSON `"flip"`, left out when none).
+public enum GelFlip: String, Codable, Sendable, CaseIterable {
+    case none, horizontal, vertical, both
+
+    /// Anything but the four words reads as no flip, so a hand-edited file still opens.
+    init(json: String?) { self = json.flatMap(GelFlip.init(rawValue:)) ?? .none }
+
+    public var mirrorsLeftRight: Bool { self == .horizontal || self == .both }
+    public var mirrorsTopBottom: Bool { self == .vertical || self == .both }
+    public init(leftRight: Bool, topBottom: Bool) {
+        self = leftRight ? (topBottom ? .both : .horizontal) : (topBottom ? .vertical : .none)
+    }
+    /// The words the export note uses.
+    public var phrase: String? {
+        switch self {
+        case .none: nil
+        case .horizontal: "flipped horizontally"
+        case .vertical: "flipped vertically"
+        case .both: "flipped horizontally and vertically"
+        }
     }
 }

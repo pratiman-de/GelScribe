@@ -32,7 +32,7 @@ public struct ExportInfo: Sendable {
         } else {
             cropText = "full frame"
         }
-        let c = (p.turn != 0 ? "turned \(p.turn * 90)°, " : "") + cropText
+        let c = (p.turn != 0 ? "turned \(p.turn * 90)°, " : "") + (p.flip.phrase.map { "\($0), " } ?? "") + cropText
         let levels = scale.map { s -> String in
             let r = p.display.range(in: s)
             return "display range \(s.format(r.min))–\(s.format(r.max)) of \(s.format(s.maxValue))"
@@ -74,7 +74,8 @@ public struct ExportInfo: Sendable {
                 guard let k else {
                     var main = p.isSideBySide ? "the reference for vertical placement" : "as above (its lanes are the figure's)"
                     if mixed && p.strict && copied(0) { main += ", original values, copied to all three channels" }
-                    if mixed && p.turn != 0 { main += ", turned \(p.turn * 90)°" }   // the headline that said so is the mixed one now
+                    if mixed && p.turn != 0 { main += ", turned \(p.turn * 90)°" }
+                    if mixed, let f = p.flip.phrase { main += ", \(f)" }   // the headline that said so is the mixed one now
                     if mixed && !p.strict { main += ", \(adjusted)" }   // and so is the one that said what was done to this gel's pixels
                     if let size {   // the kept rectangle, as the figure took it
                         let r = p.effectiveCrop(width: size.width, height: size.height)
@@ -92,6 +93,7 @@ public struct ExportInfo: Sendable {
                 if keeps { parts.append("original pixels") }
                 if keeps && copied(k) { parts.append("original values, copied to all three channels") }
                 if s.turn != 0 { parts.append("turned \(s.turn * 90)°") }
+                if let f = s.flip.phrase { parts.append(f) }
                 if !keeps && s.rotateDeg != 0 { parts.append("rotation \(s.rotateDeg)°") }
                 if let size = i < stripSizes.count ? stripSizes[i] : nil, let main = mainSize {
                     // the columns and rows the figure took (its kept rectangle), as stacked

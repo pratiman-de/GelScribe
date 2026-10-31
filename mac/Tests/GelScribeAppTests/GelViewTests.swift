@@ -481,3 +481,24 @@ private let cutBlotPackage: GelPackage = {
         #expect(abs(ws.project.strips[0].shift - (lined + ws.project.strips[0].scale * 25)) < 0.3, "\(ws.project.strips[0].shift) from \(lined)")
     }
 }
+
+@MainActor extension GelViews {
+    @Test(.enabled(if: hasDocs)) func flippingAGelIsOneUndoableStepAndTogglesBack() throws {
+        let (ws, undo) = try cutBlot()
+        #expect(!ws.isFlipped(leftRight: true) && !ws.isFlipped(leftRight: false))
+        step(undo) { ws.flipActive(leftRight: true) }
+        #expect(ws.project.flip == .horizontal && ws.isFlipped(leftRight: true) && !ws.isFlipped(leftRight: false))
+        ws.chooseGel(1)
+        step(undo) { ws.flipActive(leftRight: false) }
+        #expect(ws.project.strips[0].flip == .vertical && ws.project.flip == .horizontal && ws.isFlipped(leftRight: false))
+        #expect(undo.undoActionName == "Flip Gel")
+        undo.undo()
+        #expect(ws.project.strips[0].flip == .none && ws.project.flip == .horizontal)
+        undo.undo()
+        #expect(ws.project.flip == .none)
+        ws.chooseGel(nil)
+        step(undo) { ws.flipActive(leftRight: true) }
+        step(undo) { ws.flipActive(leftRight: true) }   // a second press mirrors back
+        #expect(ws.project.flip == .none)
+    }
+}

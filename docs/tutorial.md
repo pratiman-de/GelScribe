@@ -35,7 +35,9 @@ Turning the image means resampling it, so GelScribe asks before it turns Keep or
 toolbar says Adjusted pixels and every export records what was done to the gel. The Figure tab opens to show the angle,
 2.4° here. You can type a different value there, or click Reset to undo the rotation. For a scan made upside down or
 on its side, Turn, just below the angle, makes a half or quarter turn. That only moves pixels, so it works with Keep
-original pixels on.
+original pixels on. If the membrane was turned over during transfer and the scan came out mirrored, Flip Horizontally or
+Flip Vertically (the two buttons under Turn, also in the Format menu on the Mac) mirrors the gel as shown, again
+losslessly, and the marks you have placed go with the image.
 
 ![After straightening](images/02-straighten.png)
 
@@ -184,7 +186,7 @@ The Figure tab has everything that changes the image or the layout:
   is one switch for each gel.
 - Gels, where more gels are added (see the end of this page).
 - Brightness and contrast, from step 4.
-- Rotate: the angle, and Turn for a quarter or half turn.
+- Rotate: the angle, Turn for a quarter or half turn, and Flip for a mirrored scan.
 - Fill, for the corners a rotation uncovers: the measured gel background, white, or a gray you choose.
 - Crop, including Fit to Lanes, which crops around the lane dividers.
 - The font, the gel's width on the page, line width, tick length and an optional border.

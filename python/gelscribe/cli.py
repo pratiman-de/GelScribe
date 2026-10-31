@@ -45,6 +45,8 @@ usage:
                 [--rotate DEG] [--fill background|white|0-255]   (rotation and fill need --strict off for that gel)
                 [--scheme-from PROJECT [--with-positions]]      reuse another gel's labels, names, ladder, type
                 [--turn 90|180|270]   (a lossless quarter or half turn, for a scan made the wrong way round)
+                [--flip none|horizontal|vertical|both]   (mirror the gel as shown, after any --turn, lossless, for a membrane
+                                      turned over in the transfer; marks go with the image)
                 [--add-gel IMAGE]…    another gel (or piece of a cut membrane), stacked at the bottom with a line above; it
                                       starts with --strict off, so --align auto can stretch it into line
                 [--remove-gel N] [--order N,N,…]   take gel N out; stack the gels in this order (numbers from the top)
@@ -52,7 +54,7 @@ usage:
                                       ticks and names go with it, and no other gel moves); with --gel N, where gel N sits
                 [--gel N [--rows Y0,Y1] [--scale S] [--align auto]]   gel N, counted from the top: its rows, and lining
                                       its lanes up wherever the gel with the lanes sits; --crop, --shift, --ticks, --name, --rotate,
-                                      --turn and --strict then apply to it. Side by side, --scale sizes the gel (one size both ways,
+                                      --turn, --flip and --strict then apply to it. Side by side, --scale sizes the gel (one size both ways,
                                       0.01 to 100) and --align auto sizes it by the ladder bands both gels have, else to the same
                                       height as the gel with the lanes (a gel that keeps its original pixels is only lined up by the tops);
                                       gels are sized like that when added side by side and when this arrangement is chosen
@@ -340,6 +342,7 @@ def cmd_edit(a: Args) -> int:
     fill = a.option("--fill")
     names = a.options("--name")
     turn_text = a.option("--turn")
+    flip_text = a.option("--flip")
     add_gels = a.options("--add-gel")
     remove_text = a.option("--remove-gel")
     order_text = a.option("--order")
@@ -362,7 +365,8 @@ def cmd_edit(a: Args) -> int:
 
     from .core import detect, ladders, ops, strips as stacked
     from .core.image import ImageError, SourceImage, WorkingImage
-    from .core.model import SIDE_SCALES, GelProject, Ladder, PixelRect, Sane, format_size, parse_separator, sround
+    from .core.model import (FLIPS, SIDE_SCALES, GelProject, Ladder, PixelRect, Sane, flip_mirrors, format_size,
+                             parse_separator, sround)
     from .core.package import is_gelscribe_folder, names_in
     from .core.scheme import LabelScheme
 
@@ -428,6 +432,11 @@ def cmd_edit(a: Args) -> int:
         if d not in (90, 180, 270):
             raise CommandError("--turn wants 90, 180 or 270")
         quarter = d // 90
+    flip_to = None
+    if flip_text is not None:
+        flip_to = flip_text.lower()
+        if flip_to not in FLIPS:
+            raise CommandError("--flip wants none, horizontal, vertical or both")
     remove_n = whole(remove_text, "--remove-gel wants a gel number (1 is the top one)") if remove_text is not None else None
     gel_n = whole(gel_text, "--gel wants a gel number (1 is the top one)") if gel_text is not None else None
     for n, option in ((remove_n, "--remove-gel"), (gel_n, "--gel")):
@@ -560,6 +569,13 @@ def cmd_edit(a: Args) -> int:
         ops.turn(p, strip, quarter, *gel_size(strip))
     if strip is None and quarter:
         ops.turn(p, None, quarter, *main_size())
+    if flip_to is not None:   # after the turn, as shown: one mirror per axis that has to change
+        now = p.strips[strip - 1].flip if strip is not None else p.flip
+        want_lr, want_tb = flip_mirrors(flip_to)
+        now_lr, now_tb = flip_mirrors(now)
+        for left_right, differs in ((True, now_lr != want_lr), (False, now_tb != want_tb)):
+            if differs:
+                ops.flip(p, strip, left_right, *gel_size(strip))
     # side by side, gels arrive sized and placed: all of them when the arrangement was just chosen, else the ones just added
     # (--shift, --scale and --align below still have the last word)
     if p.is_side_by_side and (arrangement is not None or new_gels):
@@ -741,7 +757,7 @@ def cmd_edit(a: Args) -> int:
     p.sync_lane_centers(w, h)
 
     changed = any(v is not None for v in (arrangement_text, dividers, auto_lanes, labels, row_name, preset_id, system_key, ticks, title,
-                                          crop, strict, scheme_from, rotate, fill, turn_text, remove_text, order_text,
+                                          crop, strict, scheme_from, rotate, fill, turn_text, flip_text, remove_text, order_text,
                                           rows_text, shift_text, scale_text, align, own_text, file_names_text, angle_text, separator, separator_width_text,
                                           group_angle_text)) or bool(names) or bool(add_gels)
     if changed:

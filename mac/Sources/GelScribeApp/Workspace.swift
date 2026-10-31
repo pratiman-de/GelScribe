@@ -331,7 +331,7 @@ final class Workspace {
         let p = project
         var h = Hasher()
         h.combine(data.count); h.combine(data.prefix(64)); h.combine(p.strict); h.combine(p.fillPadding)
-        h.combine(p.fillMode); h.combine(p.fillValue); h.combine(p.turn); h.combine(p.display.bandsDark)   // the snapping map follows it
+        h.combine(p.fillMode); h.combine(p.fillValue); h.combine(p.turn); h.combine(p.flip); h.combine(p.display.bandsDark)   // the snapping map follows it
         let base = h.finalize()
         let rot = p.effectiveRotation
         if base != baseKey || working == nil {   // another image, or a setting that changes every pixel: now
@@ -457,7 +457,7 @@ final class Workspace {
                 continue
             }
             var h = Hasher()
-            h.combine(data.count); h.combine(data.prefix(64)); h.combine(p.isStrict(gel: i + 1)); h.combine(s.turn)
+            h.combine(data.count); h.combine(data.prefix(64)); h.combine(p.isStrict(gel: i + 1)); h.combine(s.turn); h.combine(s.flip)
             h.combine(p.fillPadding); h.combine(p.fillMode); h.combine(p.fillValue); h.combine(s.display.bandsDark)
             let base = h.finalize()
             let rot = p.isStrict(gel: i + 1) ? 0 : s.rotateDeg
@@ -845,16 +845,34 @@ final class Workspace {
     /// run the other way, so the strips it moves are lined up again in the same step.
     func turnActive(by q: Int) {
         let k = activeStrip
-        guard let size = gelSize(k) else { return }   // a gel that can't be read has no picture to turn
+        changeActive(q % 2 == 0 ? "Turn 180°" : "Turn 90°") { p, size in GelOps.turn(&p, strip: k, by: q, width: size.width, height: size.height) }
+    }
+
+    /// Whether the active gel is mirrored left-right (`leftRight`) or top-bottom on its original pixels.
+    func isFlipped(leftRight: Bool) -> Bool {
+        let f = activeStrip.map { project.strips[$0 - 1].flip } ?? project.flip
+        return leftRight ? f.mirrorsLeftRight : f.mirrorsTopBottom
+    }
+
+    /// Mirrors the active gel's original pixels (a second time undoes it); its marks go with the image.
+    func flipActive(leftRight: Bool) {
+        let k = activeStrip
+        changeActive("Flip Gel") { p, size in GelOps.flip(&p, strip: k, leftRight: leftRight, width: size.width, height: size.height) }
+    }
+
+    /// One undoable change to the active gel's pixels, with the strips it moves lined up again in the same step.
+    private func changeActive(_ name: String, _ change: (inout GelProject, (width: Int, height: Int)) -> Void) {
+        let k = activeStrip
+        guard let size = gelSize(k) else { return }   // a gel that can't be read has no picture to change
         var turned = project
-        GelOps.turn(&turned, strip: k, by: q, width: size.width, height: size.height)
+        change(&turned, size)
         var found: [Int: StripAlign.Result] = [:], refused: [Int: String] = [:]
         for j in k.map({ [$0] }) ?? turned.strips.indices.map({ $0 + 1 }) {
             guard let fit = alignment(turned, strip: j) else { continue }
             if let a = fit.outcome.result { found[j] = a } else { refused[j] = refusalNote(fit.outcome, strip: j) }
         }
-        edit(q % 2 == 0 ? "Turn 180°" : "Turn 90°") { p in
-            GelOps.turn(&p, strip: k, by: q, width: size.width, height: size.height)
+        edit(name) { p in
+            change(&p, size)
             for (j, a) in found { p.strips[j - 1].shift = p.shiftToStore(laneShift: a.shift, scale: a.scale); p.strips[j - 1].scale = a.scale }
         }
         if let k {
@@ -875,7 +893,7 @@ final class Workspace {
         // the cached working image when this gel's pixels are what it was made from, else one made as the edit will have it
         let cached = stripCache[s.image]
         let w = cached.flatMap { c in
-            c.rotation == (p.isStrict(gel: k) ? 0 : s.rotateDeg) && p.stripProject(k).turn == project.strips[k - 1].turn
+            c.rotation == (p.isStrict(gel: k) ? 0 : s.rotateDeg) && p.stripProject(k).turn == project.strips[k - 1].turn && p.strips[k - 1].flip == project.strips[k - 1].flip
                 && p.isStrict(gel: k) == project.isStrict(gel: k) && p.fillPadding == project.fillPadding && p.fillMode == project.fillMode
                 && p.fillValue == project.fillValue ? c.working : nil
         } ?? WorkingImage(source: src, project: p.stripProject(k))

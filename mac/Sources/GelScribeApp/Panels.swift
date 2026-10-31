@@ -962,6 +962,21 @@ struct FigurePanel: View {
                 Button { ws.turnActive(by: 1) } label: { Image(systemName: "rotate.right.fill") }.buttonStyle(.borderless)
                     .help("A quarter turn clockwise. Lossless; this gel's crop, ticks and names start over")
             }
+            HStack(spacing: 6) {
+                Text("Flip").frame(width: 64, alignment: .leading)
+                Toggle(isOn: Binding(get: { ws.isFlipped(leftRight: true) }, set: { _ in ws.flipActive(leftRight: true) })) {
+                    Image(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right")
+                }
+                .toggleStyle(.button).controlSize(.small)
+                .help("Flip Horizontally: mirror the gel left to right as shown, for a membrane turned over in the transfer. Lossless; marks go with the image")
+                .accessibilityLabel("Flip Horizontally")
+                Toggle(isOn: Binding(get: { ws.isFlipped(leftRight: false) }, set: { _ in ws.flipActive(leftRight: false) })) {
+                    Image(systemName: "arrow.up.and.down.righttriangle.up.righttriangle.down")
+                }
+                .toggleStyle(.button).controlSize(.small)
+                .help("Flip Vertically: mirror the gel top to bottom as shown. Lossless; marks go with the image")
+                .accessibilityLabel("Flip Vertically")
+            }
         }
 
         PanelSection(title: "Fill") {

@@ -417,6 +417,9 @@ public enum GelTools {
                           "sha256": .string(s.sha256), "intact": p.imageSHA256.map { .bool($0 == s.sha256) } ?? .null],
                 // the gel with the lanes' setting; each gel's own is in "gels" (a gel with none follows this one)
                 "strict": .bool(p.strict),
+                // how the lanes gel is mirrored as shown, after its turn: "none", "horizontal", "vertical" or "both"
+                // (each other gel's own is in "gels")
+                "flip": .string(p.flip.rawValue),
                 // the line between stacked gels: its colour ("black", "white" or "#rrggbb") and thickness (pt; the figure's lines' when not set)
                 "separator": .string(p.separatorColor.name),
                 "separator_width": .number(p.effectiveSeparatorWidth),
@@ -443,13 +446,14 @@ public enum GelTools {
                     if let k {
                         let s = p.strips[k - 1], a = p.effectiveAlignment(k)
                         o = ["gel": .number(Double(n + 1)), "image": .string(s.image), "lanes": .bool(false),
-                             "strict": .bool(p.isStrict(gel: k)),
+                             "strict": .bool(p.isStrict(gel: k)), "flip": .string(s.flip.rawValue),
                              "shift": .number(a.shift), "scale": .number(a.scale),
                              "rows": s.top == nil && s.bottom == nil ? .null : .array([.number(s.top ?? 0), s.bottom.map { .number($0) } ?? .null]),
                              // the columns the gel was given; null = the ones under the gel with the lanes' crop (what a gel follows)
                              "columns": s.left == nil && s.right == nil ? .null : .array([.number(s.left ?? 0), s.right.map { .number($0) } ?? .null])]
                     } else {
-                        o = ["gel": .number(Double(n + 1)), "image": .string(p.image), "lanes": .bool(true), "strict": .bool(p.strict)]
+                        o = ["gel": .number(Double(n + 1)), "image": .string(p.image), "lanes": .bool(true), "strict": .bool(p.strict),
+                             "flip": .string(p.flip.rawValue)]
                     }
                     if p.hasOwnLadder(k) { o["own_ladder"] = .bool(true) }
                     if p.isSideBySide {

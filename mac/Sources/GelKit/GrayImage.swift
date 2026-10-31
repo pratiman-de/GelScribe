@@ -176,6 +176,18 @@ public struct GrayImage: Sendable {
         return GrayImage(width: nw, height: nh, pixels: out, sourceBits: sourceBits)
     }
 
+    /// Mirrored left-right and/or top-bottom: pixels moved, never changed.
+    public func flipped(_ flip: GelFlip) -> GrayImage {
+        guard flip != .none else { return self }
+        let w = width, h = height, lr = flip.mirrorsLeftRight, tb = flip.mirrorsTopBottom
+        var out = [Float](repeating: 0, count: pixels.count)
+        for y in 0..<h {
+            let ny = tb ? h - 1 - y : y
+            for x in 0..<w { out[ny * w + (lr ? w - 1 - x : x)] = pixels[y * w + x] }
+        }
+        return GrayImage(width: w, height: h, pixels: out, sourceBits: sourceBits)
+    }
+
     /// Where pixel (x, y) of a w × h image lands after `q` clockwise quarter turns.
     @inline(__always) static func turn(_ x: Int, _ y: Int, _ w: Int, _ h: Int, _ q: Int) -> (Int, Int) {
         switch q {
@@ -522,6 +534,35 @@ public struct SourceImage: @unchecked Sendable {   // CGImage is immutable and t
         return SourceImage(data: data, cgImage: cg, gray: gray.turned(q), sha256: sha256, scale: scale, imageJRange: imageJRange)
     }
 
+    /// Mirrored (after the turn, as shown), losslessly like `turned`: the decoded pixels are moved in their own format.
+    public func flipped(_ flip: GelFlip) -> SourceImage {
+        guard flip != .none, let cg = Self.flip(cgImage, flip) else { return self }
+        return SourceImage(data: data, cgImage: cg, gray: gray.flipped(flip), sha256: sha256, scale: scale, imageJRange: imageJRange)
+    }
+
+    static func flip(_ cg: CGImage, _ flip: GelFlip) -> CGImage? {
+        let bpp = cg.bitsPerPixel / 8
+        guard cg.bitsPerPixel % 8 == 0, bpp > 0, let raw = cg.dataProvider?.data as Data? else { return nil }
+        let w = cg.width, h = cg.height, rowIn = cg.bytesPerRow, rowOut = w * bpp
+        let lr = flip.mirrorsLeftRight, tb = flip.mirrorsTopBottom
+        var out = Data(count: rowOut * h)
+        raw.withUnsafeBytes { (src: UnsafeRawBufferPointer) in
+            out.withUnsafeMutableBytes { (dst: UnsafeMutableRawBufferPointer) in
+                for y in 0..<h {
+                    let ny = tb ? h - 1 - y : y
+                    for x in 0..<w {
+                        let a = y * rowIn + x * bpp, b = ny * rowOut + (lr ? w - 1 - x : x) * bpp
+                        for k in 0..<bpp { dst[b + k] = src[a + k] }
+                    }
+                }
+            }
+        }
+        guard let provider = CGDataProvider(data: out as CFData), let space = cg.colorSpace else { return nil }
+        return CGImage(width: w, height: h, bitsPerComponent: cg.bitsPerComponent, bitsPerPixel: cg.bitsPerPixel,
+                       bytesPerRow: rowOut, space: space, bitmapInfo: cg.bitmapInfo, provider: provider,
+                       decode: cg.decode, shouldInterpolate: false, intent: cg.renderingIntent)
+    }
+
     private init(data: Data, cgImage: CGImage, gray: GrayImage, sha256: String, scale: ValueScale, imageJRange: ClosedRange<Double>?) {
         self.data = data; self.cgImage = cgImage; self.gray = gray; self.sha256 = sha256; self.scale = scale
         self.imageJRange = imageJRange
@@ -660,7 +701,7 @@ public struct WorkingImage: @unchecked Sendable {
     private let cache = Processed()
 
     public init(source: SourceImage, project: GelProject) {
-        let source = source.turned(project.turn)   // lossless, so before everything, Strict or not
+        let source = source.turned(project.turn).flipped(project.flip)   // lossless, so before everything, Strict or not
         self.source = source
         strict = project.strict
         rotation = project.effectiveRotation

@@ -1164,6 +1164,16 @@ class FigurePanel(Panel):
                       button("180°", lambda: ws.turn_active(2),
                              tip="Half a turn, for a scan made upside down. Lossless; ticks and names turn with it"),
                       button("⟳ 90°", lambda: ws.turn_active(1), tip="A quarter turn clockwise. " + lossless)))
+        self.flip_buttons = {}
+        for left_right, title, tip in (
+                (True, "Flip Horizontally", "Mirror the gel left to right as shown, for a membrane turned over in the transfer. "
+                                            "Lossless; marks go with the image"),
+                (False, "Flip Vertically", "Mirror the gel top to bottom as shown. Lossless; marks go with the image")):
+            b = button(title, lambda _=False, lr=left_right: ws.flip_active(lr), tip=f"{title}: {tip}")
+            b.setCheckable(True)
+            b.setAccessibleName(title)
+            self.flip_buttons[left_right] = b
+        self.add(hrow(self.flip_buttons[True], self.flip_buttons[False], "stretch"))
         self.gap()
         # fill
         self.add(section("Fill"))
@@ -1348,6 +1358,8 @@ class FigurePanel(Panel):
         self.angle_slider.setEnabled(not strict)
         self.reset_rot.setEnabled(not strict and ws.active_rotation != 0)
         self.rot_caption.setVisible(strict)
+        for left_right, b in self.flip_buttons.items():
+            b.setChecked(ws.is_flipped(left_right))
         self.fill.set(p.fill_mode)
         self.fill_value.setVisible(p.fill_mode == "custom")
         self.fill_value.set(p.fill_value)

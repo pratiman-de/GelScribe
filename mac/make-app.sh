@@ -9,7 +9,7 @@ CONFIG="${1:-release}"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 BUILD="$ROOT/.build/$CONFIG"
 APP="$ROOT/GelScribe.app"
-VERSION="0.1.1"   # the one place the version is set; the app and `gelscribe --version` read it from Info.plist
+VERSION="0.1.2"   # the one place the version is set; the app and `gelscribe --version` read it from Info.plist
 
 swift build -c "$CONFIG" --product GelScribeApp
 swift build -c "$CONFIG" --product gelscribe

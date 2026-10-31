@@ -13,7 +13,7 @@ SAMPLE = json.dumps({"tag_name": "v0.3", "html_url": "https://github.com/pratima
 
 
 def test_version_is_0_1_1():
-    assert __version__ == "0.1.1"
+    assert __version__ == "0.1.2"
 
 
 def test_version_order():
@@ -120,7 +120,7 @@ def test_launch_check_shows_notice_and_stores_time(ctl):
     assert wait(ctl, lambda: ctl.updates.notice is not None)
     n = ctl.updates.notice
     assert "0.3 is available" in n.findChild(type(n.text)).text()
-    assert "You have 0.1.1." in n.text.text() and "Faster export" in n.text.text()
+    assert f"You have {__version__}." in n.text.text() and "Faster export" in n.text.text()
     assert n.isVisible() and not n.isModal() and calls == [__version__]
     assert ctl.updates.last_check() is not None
     assert not ctl.updates.check()   # within 24 h: nothing more
@@ -155,7 +155,7 @@ def test_manual_check_reports(ctl):
     ctl.updates.checker.fetch = lambda v: json.dumps({"tag_name": "v0.1.1", "html_url": "https://github.com/x/y"})
     ctl.updates.check(manual=True)
     assert wait(ctl, lambda: ctl.updates.alert is not None)
-    assert ctl.updates.alert.text() == "GelScribe 0.1.1 is the latest version."
+    assert ctl.updates.alert.text() == f"GelScribe {__version__} is the latest version."
     ctl.updates.alert.close()
     ctl.updates.alert = None
 
@@ -197,4 +197,4 @@ def test_cli_version():
     import sys
     out = subprocess.run([sys.executable, "-m", "gelscribe", "--version"], capture_output=True, text=True,
                          cwd=str(__import__("pathlib").Path(__file__).resolve().parent.parent))
-    assert out.stdout.strip() == "gelscribe 0.1.1"
+    assert out.stdout.strip() == f"gelscribe {__version__}"

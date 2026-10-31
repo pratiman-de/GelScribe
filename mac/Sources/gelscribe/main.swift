@@ -27,6 +27,8 @@ usage:
                 [--rotate DEG] [--fill background|white|0-255]   (rotation and fill need --strict off for that gel)
                 [--scheme-from PROJECT [--with-positions]]      reuse another gel's labels, names, ladder, type
                 [--turn 90|180|270]   (a lossless quarter or half turn, for a scan made the wrong way round)
+                [--flip none|horizontal|vertical|both]   (mirror the gel as shown, after any --turn, lossless, for a membrane
+                                      turned over in the transfer; marks go with the image)
                 [--add-gel IMAGE]…    another gel (or piece of a cut membrane), stacked at the bottom with a line above; it
                                       starts with --strict off, so --align auto can stretch it into line
                 [--remove-gel N] [--order N,N,…]   take gel N out; stack the gels in this order (numbers from the top)
@@ -34,7 +36,7 @@ usage:
                                       ticks and names go with it, and no other gel moves); with --gel N, where gel N sits
                 [--gel N [--rows Y0,Y1] [--scale S] [--align auto]]   gel N, counted from the top: its rows, and lining
                                       its lanes up wherever the gel with the lanes sits; --crop, --shift, --ticks, --name, --rotate,
-                                      --turn and --strict then apply to it. Side by side, --scale sizes the gel (one size both ways,
+                                      --turn, --flip and --strict then apply to it. Side by side, --scale sizes the gel (one size both ways,
                                       0.01 to 100) and --align auto sizes it by the ladder bands both gels have, else to the same
                                       height as the gel with the lanes (a gel that keeps its original pixels is only lined up by the tops);
                                       gels are sized like that when added side by side and when this arrangement is chosen
@@ -286,6 +288,7 @@ func runEdit(_ words: [String]) throws {
     let gelText = a.option("--gel")
     let arrangementText = a.option("--arrangement")
     let turnText = a.option("--turn")
+    let flipText = a.option("--flip")
     let rowsText = a.option("--rows")
     let shiftText = a.option("--shift")
     let scaleText = a.option("--scale")
@@ -362,6 +365,10 @@ func runEdit(_ words: [String]) throws {
         let d = whole(t, "--turn wants 90, 180 or 270")
         guard [90, 180, 270].contains(d) else { fail("--turn wants 90, 180 or 270") }
         return d / 90
+    }
+    let flipTo = flipText.map { t -> GelFlip in
+        guard let f = GelFlip(rawValue: t.lowercased()) else { fail("--flip wants none, horizontal, vertical or both") }
+        return f
     }
     let removeN = removeText.map { whole($0, "--remove-gel wants a gel number (1 is the top one)") }
     let gelN = gelText.map { whole($0, "--gel wants a gel number (1 is the top one)") }
@@ -458,6 +465,13 @@ func runEdit(_ words: [String]) throws {
         } else {
             let s = try mainSize()
             GelOps.turn(&pkg.project, strip: nil, by: q, width: s.width, height: s.height)
+        }
+    }
+    if let want = flipTo {
+        let now = strip.map { pkg.project.strips[$0 - 1].flip } ?? pkg.project.flip
+        for leftRight in [true, false] where (leftRight ? now.mirrorsLeftRight != want.mirrorsLeftRight : now.mirrorsTopBottom != want.mirrorsTopBottom) {
+            let s = try strip.map { try stripSize($0) } ?? mainSize()
+            GelOps.flip(&pkg.project, strip: strip, leftRight: leftRight, width: s.width, height: s.height)
         }
     }
     func allStripSizes() throws -> [(width: Int, height: Int)] { try pkg.project.strips.indices.map { try stripSize($0 + 1) } }
@@ -676,7 +690,7 @@ func runEdit(_ words: [String]) throws {
     if let size = try? mainSize() { pkg.project.syncLaneCenters(imageWidth: size.width, imageHeight: size.height) }
 
     let changed = [arrangementText, dividersText, autoLanesText, labelsText, rowName, labelAngleText, groupAngleText, presetID, systemKey, ticksText, titleText, cropText,
-                   strictText, separatorText, separatorWidthText, schemeFrom, rotateText, fillText, removeText, orderText, turnText, rowsText, shiftText, scaleText,
+                   strictText, separatorText, separatorWidthText, schemeFrom, rotateText, fillText, removeText, orderText, turnText, flipText, rowsText, shiftText, scaleText,
                    alignText, ownLadderText, fileNamesText].contains { $0 != nil } || !nameTexts.isEmpty || !newGels.isEmpty
     if changed {
         if isFolder {

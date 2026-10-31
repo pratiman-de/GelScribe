@@ -18,7 +18,7 @@ from typing import Optional
 import numpy as np
 from scipy import ndimage
 
-from .model import DisplaySettings, GelProject, PixelRect, ValueScale
+from .model import DisplaySettings, GelProject, PixelRect, ValueScale, flip_mirrors
 
 
 class ImageError(Exception):
@@ -244,9 +244,29 @@ class SourceImage:
             t.gray = np.ascontiguousarray(np.rot90(self.gray, -q))
             t._color = None   # made again from the turned pixels when wanted
             t._turns = {}
+            t._flips = {}
             t.__dict__.pop("_wedges", None)
             memo[q] = t
         return memo[q]
+
+    def flipped(self, flip: str) -> "SourceImage":
+        """The same file mirrored left-right and/or top-bottom ("horizontal", "vertical", "both"): pixels moved, never
+        changed, so Strict allows it."""
+        lr, tb = flip_mirrors(flip)
+        if not (lr or tb):
+            return self
+        memo = self.__dict__.setdefault("_flips", {})
+        if flip not in memo:
+            axes = tuple(a for a, on in ((1, lr), (0, tb)) if on)
+            t = copy.copy(self)
+            t.pixels = np.ascontiguousarray(np.flip(self.pixels, axis=axes))
+            t.gray = np.ascontiguousarray(np.flip(self.gray, axis=axes))
+            t._color = None
+            t._turns = {}
+            t._flips = {}
+            t.__dict__.pop("_wedges", None)
+            memo[flip] = t
+        return memo[flip]
 
     @property
     def width(self) -> int:
@@ -457,7 +477,7 @@ class WorkingImage:
     of that reaches the figure is up to the project: in Strict mode the figure gets the original pixels, cropped."""
 
     def __init__(self, source: SourceImage, project: GelProject):
-        source = source.turned(project.turn)   # lossless, so before everything, Strict or not
+        source = source.turned(project.turn).flipped(project.flip)   # lossless, so before everything, Strict or not
         self.source = source
         self.strict = project.strict
         self.rotation = project.effective_rotation

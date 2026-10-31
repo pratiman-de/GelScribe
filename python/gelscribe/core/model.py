@@ -73,6 +73,29 @@ def _opt_text(v, what: str) -> Optional[str]:
     return None if v is None else _text(v, what)
 
 
+FLIPS = ("none", "horizontal", "vertical", "both")
+
+
+def _flip(v) -> str:
+    """A flip word; anything but the four reads as no flip, so a hand-edited file still opens."""
+    return v if isinstance(v, str) and v in FLIPS else "none"
+
+
+def flip_mirrors(flip: str) -> tuple[bool, bool]:
+    """(mirrored left-right, mirrored top-bottom)."""
+    return flip in ("horizontal", "both"), flip in ("vertical", "both")
+
+
+def flip_word(left_right: bool, top_bottom: bool) -> str:
+    return ("both" if top_bottom else "horizontal") if left_right else ("vertical" if top_bottom else "none")
+
+
+def flip_phrase(flip: str) -> Optional[str]:
+    """The words the export note uses."""
+    return {"horizontal": "flipped horizontally", "vertical": "flipped vertically",
+            "both": "flipped horizontally and vertically"}.get(flip)
+
+
 def _flag(v, what: str, default: bool) -> bool:
     if v is None:
         return default
@@ -928,6 +951,9 @@ class GelStrip:
     #: this gel's own lanes, in its own pixels, used when the gels sit side by side (JSON "lanes", left out when it has none);
     #: kept in the file, unused, while the gels are stacked top to bottom
     lanes: Optional[Lanes] = None
+    #: how its pixels are mirrored, as shown, after its quarter turns: "none", "horizontal", "vertical" or "both"
+    #: (JSON "flip", left out when none)
+    flip: str = "none"
 
     def side_columns(self, width: int) -> tuple[float, float]:
         """Kept columns side by side: its own, whole pixels inside the image (width wide), the whole width where none are set."""
@@ -975,6 +1001,7 @@ class GelStrip:
 
     def sanitize(self, scales: tuple[float, float] = (0.5, 2.0)) -> None:
         self.turn %= 4
+        self.flip = _flip(self.flip)
         self.rotate_deg = _clamp(self.rotate_deg, -360, 360, 0.0)
         self.display.sanitize()
         if self.lanes is not None:
@@ -1003,6 +1030,8 @@ class GelStrip:
             d["image_sha256"] = self.image_sha256
         if self.turn != 0:
             d["turn"] = self.turn
+        if self.flip != "none":
+            d["flip"] = self.flip
         if self.top is not None:
             d["top"] = self.top
         if self.bottom is not None:
@@ -1032,7 +1061,8 @@ class GelStrip:
                         _num(d.get("left"), f"{what}.left"), _num(d.get("right"), f"{what}.right"),
                         _num(d.get("shift"), f"{what}.shift", 0.0), _num(d.get("scale"), f"{what}.scale", 1.0),
                         _flag(d.get("own_ladder"), f"{what}.own_ladder", False), _opt_flag(d.get("strict"), f"{what}.strict"),
-                        None if d.get("lanes") is None else Lanes.from_json(d.get("lanes"), f"{what}.lanes"))
+                        None if d.get("lanes") is None else Lanes.from_json(d.get("lanes"), f"{what}.lanes"),
+                        _flip(d.get("flip")))
 
 
 # ---------------------------------------------------------------------------------------------------- project
@@ -1064,6 +1094,9 @@ class GelProject:
     #: quarter turns clockwise (0…3) before anything else, for a scan made the wrong way round; lossless, so Strict
     #: allows it
     turn: int = 0
+    #: mirrored after the quarter turns and before the rotation, for a membrane turned over in the transfer; lossless:
+    #: "none", "horizontal", "vertical" or "both" (JSON "flip", left out when none)
+    flip: str = "none"
     #: more gels in the same figure, stacked top to bottom in this order with a line between each (see GelStrip)
     strips: list[GelStrip] = field(default_factory=list)
     #: how the gels sit in the figure: "top_to_bottom" (the default, left out of the file) or "side_by_side", left to right in
@@ -1271,6 +1304,7 @@ class GelProject:
                        rotate_deg=s.rotate_deg, fill_mode=self.fill_mode, fill_value=self.fill_value,
                        display=copy.deepcopy(s.display))
         p.turn = s.turn
+        p.flip = s.flip
         return p
 
     def effective_alignment(self, k: int) -> tuple[float, float]:
@@ -1472,6 +1506,7 @@ class GelProject:
         makes every stacked gel's rows valid. Done on every load. Returns whether anything changed."""
         before = copy.deepcopy(self)
         self.turn %= 4
+        self.flip = _flip(self.flip)
         self.rotate_deg = _clamp(self.rotate_deg, -360, 360, 0.0)
         self.main_shift = _clamp(self.main_shift, -Sane.coordinate, Sane.coordinate, 0.0)
         # a line thickness that isn't a number goes back to following the figure's lines, one outside 0.25 to 10 pt into that range
@@ -1525,6 +1560,8 @@ class GelProject:
             d["ladder"] = self.ladder.to_json()
         if self.turn % 4:
             d["turn"] = self.turn % 4
+        if self.flip != "none":
+            d["flip"] = self.flip
         if self.strips:
             d["strips"] = [s.to_json() for s in self.strips]
         if self.arrangement != "top_to_bottom":
@@ -1565,6 +1602,7 @@ class GelProject:
             ladder=None if ladder is None else Ladder.from_json(ladder, "ladder"),
             annotations=[BandAnnotation.from_json(a, f"annotations[{i}]") for i, a in enumerate(_list(d.get("annotations"), "annotations"))],
             style=FigureStyle.from_json(d.get("style"), "style"), turn=_int(d.get("turn"), "turn", 0) % 4,
+            flip=_flip(d.get("flip")),
             strips=[GelStrip.from_json(s, f"strips[{i}]") for i, s in enumerate(_list(d.get("strips"), "strips"))],
             arrangement="side_by_side" if d.get("arrangement") == "side_by_side" else "top_to_bottom",
             main_position=_int(d.get("main_position"), "main_position", 0),

@@ -110,9 +110,9 @@ public actor FileProjectHost: ProjectHost {
             p.settle(with: e.work)
             if p != e.pkg.project {
                 let old = e.pkg.project
-                let pixelsChanged = p.strict != old.strict || p.rotateDeg != old.rotateDeg || p.fillPadding != old.fillPadding || p.turn != old.turn
-                let stripsChanged = pixelsChanged || p.strips.map { [$0.image, "\($0.turn)", "\($0.rotateDeg)", "\(String(describing: $0.strict))"] }
-                    != old.strips.map { [$0.image, "\($0.turn)", "\($0.rotateDeg)", "\(String(describing: $0.strict))"] }
+                let pixelsChanged = p.strict != old.strict || p.rotateDeg != old.rotateDeg || p.fillPadding != old.fillPadding || p.turn != old.turn || p.flip != old.flip
+                let stripsChanged = pixelsChanged || p.strips.map { [$0.image, "\($0.turn)", $0.flip.rawValue, "\($0.rotateDeg)", "\(String(describing: $0.strict))"] }
+                    != old.strips.map { [$0.image, "\($0.turn)", $0.flip.rawValue, "\($0.rotateDeg)", "\(String(describing: $0.strict))"] }
                 e.pkg.project = p
                 if pixelsChanged {
                     let strips = e.work.strips

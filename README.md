@@ -97,7 +97,8 @@ their row's card, and their underline stays level. On the command line these are
 
 Every new project starts with Keep original pixels on, which the command line calls Strict. The exported gel then has
 the scan's original values, bit depth and color space, never resampled. Cropping is allowed, since it only selects
-pixels. Brightness and contrast still work but change only the screen, as in ImageJ before you press Apply.
+pixels, and so are Turn and Flip (for a scan of a membrane that was turned over in the transfer), which only move them.
+Brightness and contrast still work but change only the screen, as in ImageJ before you press Apply.
 
 Turn it off in the Figure tab, under Original image, when you need to rotate the scan, fill the corners a rotation
 uncovers, stretch a gel into line with another, or put a display range into the exported figure. GelScribe asks before
@@ -152,7 +153,7 @@ Positions are in image pixels, and each tick snaps to the band under it. `gelscr
 `detect` (suggested lanes and ladder bands), `presets` and `verify`. `edit` also stacks gels (`--add-gel`, `--gel N`,
 `--order`, `--remove-gel`, `--own-ladder`, `--shift`), sets Keep original pixels for each gel (`--strict on|off`, with
 `--gel N`), the line between gels (`--separator`, `--separator-width`) and the label angles (`--label-angle`,
-`--group-angle`); the [tutorial for multi-gel figures](docs/multi-gel.md#command-line) has examples.
+`--group-angle`), a lossless turn or mirror of a scan (`--turn`, `--flip none|horizontal|vertical|both`, with `--gel N`); the [tutorial for multi-gel figures](docs/multi-gel.md#command-line) has examples.
 
 On the Mac the tool is inside the app, at `GelScribe.app/Contents/Helpers/gelscribe`. In the Python version the
 launcher runs it when the first word is a command: `GelScribe.bat render blot.gelscribe` on Windows,

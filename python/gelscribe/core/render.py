@@ -19,7 +19,7 @@ import numpy as np
 
 from .image import ImageError
 from .layout import TEXT_SCALE, FigureLayout, FigureText, ensure_gui, qfont
-from .model import GelProject, PixelRect, ValueScale, format_size, sround
+from .model import GelProject, PixelRect, ValueScale, flip_phrase, format_size, sround
 
 #: what a figure that can't be put together says (the same on the Mac): never a blank gel, never a crash
 FIGURE_TOO_LARGE = "The figure is too large to make. Crop the gels or lower the export resolution."
@@ -100,6 +100,8 @@ def export_info(p: GelProject, source_sha256: Optional[str], resampled_dpi: Opti
              else PixelRect(math.floor(min(k.x0, k.x1)), math.floor(min(k.y0, k.y1)),
                             math.ceil(max(k.x0, k.x1)), math.ceil(max(k.y0, k.y1))))
         c = f"crop {int(r.x0)},{int(r.y0)},{int(r.x1)},{int(r.y1)}"
+    if flip_phrase(p.flip):
+        c = f"{flip_phrase(p.flip)}, {c}"
     if p.turn % 4:
         c = f"turned {p.turn % 4 * 90}°, {c}"
     if scale is not None:
@@ -139,6 +141,8 @@ def export_info(p: GelProject, source_sha256: Optional[str], resampled_dpi: Opti
                     main += f", {COPIED_NOTE}"
                 if mixed and p.turn % 4:   # the headline that said so is the mixed one now
                     main += f", turned {p.turn % 4 * 90}°"
+                if mixed and flip_phrase(p.flip):
+                    main += f", {flip_phrase(p.flip)}"
                 if mixed and not p.strict:   # and so is the one that said what was done to this gel's pixels
                     main += f", {adjusted}"
                 if size is not None:   # the kept rectangle, as the figure took it
@@ -158,6 +162,8 @@ def export_info(p: GelProject, source_sha256: Optional[str], resampled_dpi: Opti
                 parts.append(COPIED_NOTE)
             if s.turn % 4:
                 parts.append(f"turned {s.turn % 4 * 90}°")
+            if flip_phrase(s.flip):
+                parts.append(flip_phrase(s.flip))
             if not keep and s.rotate_deg != 0:
                 parts.append(f"rotation {float(s.rotate_deg)}°")
             gel_size = strips[i][2] if i < len(strips) and len(strips[i]) > 2 else None

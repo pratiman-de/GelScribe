@@ -175,8 +175,11 @@ public enum GelOps {
         let q = ((quarterTurns % 4) + 4) % 4
         guard q != 0 else { return }
         let w = Double(W), h = Double(H)
+        // the flip comes after the turn: turning a mirrored gel a quarter makes its mirror run the other way in the file's terms
+        func rotated(_ f: GelFlip) -> GelFlip { q % 2 == 1 ? GelFlip(leftRight: f.mirrorsTopBottom, topBottom: f.mirrorsLeftRight) : f }
         if let k {
             guard k >= 1, k <= p.strips.count else { return }
+            p.strips[k - 1].flip = rotated(p.strips[k - 1].flip)
             p.strips[k - 1].turn = (p.strips[k - 1].turn + q) % 4
             if var l = p.strips[k - 1].lanes {   // this gel's own lanes (side by side) turn with it, or go when lanes would run the other way
                 if q == 2 {
@@ -202,6 +205,7 @@ public enum GelOps {
                 p.strips[k - 1].left = nil; p.strips[k - 1].right = nil
             }
         } else {
+            p.flip = rotated(p.flip)
             p.turn = (p.turn + q) % 4
             if q != 2 { p.mainShift = 0 }   // a quarter turn swaps the gel's width and height: where it sat sideways starts over
             if q == 2 {
@@ -235,6 +239,68 @@ public enum GelOps {
         }
         if k == nil && q == 2 { p.syncLaneCenters(imageWidth: W, imageHeight: H) }
         if let k, q == 2, p.strips.indices.contains(k - 1), p.strips[k - 1].lanes != nil { p.syncLaneCenters(imageWidth: W, imageHeight: H, gel: k) }
+    }
+
+    /// Mirrors a piece (`strip` nil = the main image), `leftRight` or top-bottom as the gel is shown, after its quarter turns;
+    /// `width`×`height` is its working image. The flip comes before the rotation, so the straightening angle changes sign (a
+    /// mirrored picture leans the other way; the crop, rows and columns are mirrored about the centre to keep the same region
+    /// framed, and the shown gel is exactly the old one mirrored in place). Its marks go with the image as in a half turn: a mirror left-right moves dividers, the crop and a strip's
+    /// columns; one top-bottom moves ticks, names, the dividers' slant, the crop and a strip's rows. Lane labels keep their order.
+    public static func flip(_ p: inout GelProject, strip k: Int?, leftRight: Bool, width W: Int, height H: Int) {
+        let w = Double(W), h = Double(H)
+        let current: GelFlip
+        if let k {
+            guard k >= 1, k <= p.strips.count else { return }
+            current = p.strips[k - 1].flip
+        } else { current = p.flip }
+        let next = GelFlip(leftRight: current.mirrorsLeftRight != leftRight, topBottom: current.mirrorsTopBottom != !leftRight)
+        let acrossScreen = leftRight   // true: the working image is mirrored left-right, else top-bottom
+        func negated(_ degrees: Double) -> Double { degrees == 0 ? 0 : -degrees }   // (no -0 in the file)
+        func mirrored(_ lanes: inout Lanes) {
+            lanes.dividers = lanes.dividers.map {
+                var d = $0
+                if acrossScreen { (d.xTop, d.xBottom) = (w - 1 - $0.xTop, w - 1 - $0.xBottom) }
+                else { (d.xTop, d.xBottom, d.dotY) = ($0.xBottom, $0.xTop, h - 1 - $0.dotY) }
+                return d
+            }.sorted { ($0.xTop + $0.xBottom) < ($1.xTop + $1.xBottom) }
+        }
+        if let k {
+            p.strips[k - 1].flip = next
+            p.strips[k - 1].rotateDeg = negated(p.strips[k - 1].rotateDeg)
+            if var l = p.strips[k - 1].lanes { mirrored(&l); p.strips[k - 1].lanes = l }
+            let s = p.strips[k - 1]
+            if acrossScreen {
+                (p.strips[k - 1].left, p.strips[k - 1].right) = (s.right.map { w - $0 }, s.left.map { w - $0 })
+                let l = p.strips[k - 1].left ?? 0, r = p.strips[k - 1].right ?? w
+                if !(l >= 0 && l < r && r <= w) { p.strips[k - 1].left = nil; p.strips[k - 1].right = nil }
+            } else {
+                (p.strips[k - 1].top, p.strips[k - 1].bottom) = (s.bottom.map { h - $0 }, s.top.map { h - $0 })
+                let t = p.strips[k - 1].top ?? 0, b = p.strips[k - 1].bottom ?? h
+                if !(t >= 0 && t < b && b <= h) { p.strips[k - 1].top = nil; p.strips[k - 1].bottom = nil }
+            }
+        } else {
+            p.flip = next
+            p.rotateDeg = negated(p.rotateDeg)
+            if acrossScreen {
+                p.crop = p.crop.map { PixelRect(x0: w - $0.x1, y0: $0.y0, x1: w - $0.x0, y1: $0.y1) }
+            } else {
+                p.crop = p.crop.map { PixelRect(x0: $0.x0, y0: h - $0.y1, x1: $0.x1, y1: h - $0.y0) }
+            }
+            mirrored(&p.lanes)
+        }
+        if !acrossScreen {
+            if var l = p.ladder {
+                for i in l.bands.indices where l.bands[i].strip == k { l.bands[i].y = h - 1 - l.bands[i].y }
+                if let uy = l.unitY, l.unitStrip == k { l.unitY = h - 1 - uy }
+                p.ladder = l
+            }
+            for i in p.annotations.indices where p.annotations[i].strip == k {
+                p.annotations[i].y = h - 1 - p.annotations[i].y
+                if let y2 = p.annotations[i].y2 { p.annotations[i].y2 = h - 1 - y2 }
+            }
+        }
+        if k == nil { p.syncLaneCenters(imageWidth: W, imageHeight: H) }
+        if let k, p.strips[k - 1].lanes != nil { p.syncLaneCenters(imageWidth: W, imageHeight: H, gel: k) }
     }
 
     /// Takes strip `k` out, with its ticks and names; the gels under it move up one.

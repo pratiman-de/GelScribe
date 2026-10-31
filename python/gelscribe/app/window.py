@@ -376,6 +376,10 @@ class MainWindow(QMainWindow):
         fm = mb.addMenu("F&ormat")
         act(fm, "Bigger Text", lambda: ws.bump_text(0.5), key="biggerText")
         act(fm, "Smaller Text", lambda: ws.bump_text(-0.5), key="smallerText")
+        fm.addSeparator()
+        self.flip_actions = {lr: act(fm, title, lambda _=False, lr=lr: ws.flip_active(lr), checkable=True)
+                             for lr, title in ((True, "Flip Horizontally"), (False, "Flip Vertically"))}
+        fm.aboutToShow.connect(self._fill_flips)
 
         t = mb.addMenu("&Tools")
         for tid, title, _key, _hint in TOOLS:   # window shortcuts: a tool's key works anywhere but a text field
@@ -390,6 +394,12 @@ class MainWindow(QMainWindow):
         act(hm, "About GelScribe", self.about)
         keys.store().changed.connect(self.apply_keys)
         self.apply_keys()
+
+    def _fill_flips(self):
+        """Format > Flip: ticked for the way the chosen gel is mirrored; off until there is a picture."""
+        for lr, a in self.flip_actions.items():
+            a.setChecked(self.ws.is_flipped(lr))
+            a.setEnabled(self.ws.working is not None)
 
     def apply_keys(self):
         """The shortcuts from Settings › Shortcuts: on the menu commands and tools, and in the palette's tips."""

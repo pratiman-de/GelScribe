@@ -23,7 +23,7 @@ from ..core.detect import snap_band
 from ..core.image import ImageError, SourceImage, WorkingImage
 from ..core.layout import FigureLayout, layout as make_layout
 from ..core.model import (SIDE_SCALES, BandAnnotation, DisplaySettings, GelProject, LabelGroup, LabelRow, Ladder, LaneDivider,
-                          PixelRect, Role, ValueScale, format_size, parse_separator, separator_gray, separator_rgb, sround)
+                          PixelRect, Role, ValueScale, flip_mirrors, format_size, parse_separator, separator_gray, separator_rgb, sround)
 from ..core.package import GelPackage, is_gelscribe_folder, is_plain_name, names_in, uses_image
 from ..core.scheme import LabelScheme
 from . import settings
@@ -75,7 +75,7 @@ class _Run(QRunnable):
                 side.join()
                 dark = dark_box[0]
                 key = (id(source.data), p.strict, p.rotate_deg, p.fill_padding, p.fill_mode, p.fill_value,
-                       p.display.bands_dark, p.turn)
+                       p.display.bands_dark, p.turn, p.flip)
                 job.main_out = (w, dark, key, view)
             for k, old in job.strips:
                 if job.cancel.is_set():
@@ -84,7 +84,7 @@ class _Run(QRunnable):
                 w = WorkingImage(old["source"], p.strip_project(k))
                 d = s.display
                 key = (old["key"][0], p.is_strict(k), s.rotate_deg, s.turn, p.fill_padding, p.fill_mode, p.fill_value,
-                       d.bands_dark)
+                       d.bands_dark, s.flip)
                 c = {"key": key, "source": old["source"], "working": w, "dark": w.darkness(d.bands_dark),
                      "view": w.view_image(p.strip_project(k)), "qview": None, "image": s.image,
                      "rot": 0.0 if p.is_strict(k) else s.rotate_deg}
@@ -364,7 +364,7 @@ class Workspace(QObject):
             return
         p = self.project
         key = (id(self.image_data), p.strict, p.rotate_deg, p.fill_padding, p.fill_mode, p.fill_value,
-               p.display.bands_dark, p.turn)
+               p.display.bands_dark, p.turn, p.flip)
         # only the angle changed while it is being dragged: the pixels for it are made when it stops (settle)
         only_angle = (self._lazy and self.working is not None and self._image_key is not None
                       and key[:2] + key[3:] == self._image_key[:2] + self._image_key[3:])
@@ -548,7 +548,7 @@ class Workspace(QObject):
             c = self._strip_cache.get(s.image)
             if data is not None:
                 key = (id(data), p.is_strict(i + 1), s.rotate_deg, s.turn, p.fill_padding, p.fill_mode, p.fill_value,
-                       s.display.bands_dark)
+                       s.display.bands_dark, s.flip)
                 if (self._lazy and c is not None and c["key"][:2] + c["key"][3:] == key[:2] + key[3:]):
                     key = c["key"]   # only its angle changed, while it is being dragged: see refresh_caches
                 if c is None or c["key"] != key:
@@ -1196,29 +1196,46 @@ class Workspace(QObject):
         """Turns the chosen gel by quarter turns; a half turn keeps its marks, a quarter turn clears them. Its lanes
         now run the other way, so the gels it moves are lined up again in the same step."""
         k = self.active_strip
+        self._change_active("Turn 180°" if q % 2 == 0 else "Turn 90°", lambda p, w, h: ops.turn(p, k, q, w, h))
+        self.selection = None   # a quarter turn took the gel's ticks and names out; a half turn moved them
+
+    def is_flipped(self, left_right: bool) -> bool:
+        """Whether the chosen gel is mirrored left-right (left_right) or top-bottom."""
+        k = self.active_strip
+        lr, tb = flip_mirrors(self.project.strips[k - 1].flip if k is not None else self.project.flip)
+        return lr if left_right else tb
+
+    def flip_active(self, left_right: bool) -> None:
+        """Mirrors the chosen gel as shown (a second time undoes it); its marks go with the image."""
+        k = self.active_strip
+        self._change_active("Flip Gel", lambda p, w, h: ops.flip(p, k, left_right, w, h))
+
+    def _change_active(self, name: str, change: Callable[[GelProject, int, int], None]) -> None:
+        """One undoable change to the chosen gel's pixels (change(project, width, height)), with the gels it moves
+        lined up again in the same step."""
+        k = self.active_strip
         size = self.gel_size(k)
-        if size is None:   # a gel that can't be read has no picture to turn
+        if size is None:   # a gel that can't be read has no picture to change
             return
         w, h = size
-        turned = self.project.copy()
-        ops.turn(turned, k, q, w, h)
+        changed = self.project.copy()
+        change(changed, w, h)
         found, results = {}, {}
-        for j in ([k] if k is not None else range(1, len(turned.strips) + 1)):
-            got = self._alignment(turned, j)
+        for j in ([k] if k is not None else range(1, len(changed.strips) + 1)):
+            got = self._alignment(changed, j)
             r = results[j] = got[0] if got else None
             if r is not None and r.alignment is not None:
                 found[j] = r.alignment
 
         def fn(p):
-            ops.turn(p, k, q, w, h)
+            change(p, w, h)
             for j, a in found.items():
                 ops.align_strip(p, j, a.shift, a.scale)
-        self.edit("Turn 180°" if q % 2 == 0 else "Turn 90°", fn)
-        self.selection = None   # a quarter turn took the gel's ticks and names out; a half turn moved them
+        self.edit(name, fn)
         if k in found:
             self.align_note = self._note(found[k], self.project.is_strict(k))
         else:
-            self.align_note = (self._no_alignment(turned, k, results[k]) if k is not None and results.get(k) is not None
+            self.align_note = (self._no_alignment(changed, k, results[k]) if k is not None and results.get(k) is not None
                                else None)
         self.view_changed.emit()
 

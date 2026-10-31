@@ -8,7 +8,7 @@ from typing import Callable, Optional
 from . import labels as ql
 from .ladders import LadderPreset, LadderSystem
 from .model import (BandAnnotation, GelProject, LabelRow, Ladder, LadderBand, LaneDivider, LaneGeometry, Line,
-                    PixelRect, sround)
+                    PixelRect, flip_mirrors, flip_word, sround)
 
 # ---------------------------------------------------------------------------------------------------- lanes
 
@@ -238,10 +238,16 @@ def turn(p: GelProject, strip: Optional[int], quarter_turns: int, w: int, h: int
     q = quarter_turns % 4
     if q == 0:
         return
+
+    def rotated(f: str) -> str:   # the flip comes after the turn: a quarter turn makes a mirror run the other way in the file's terms
+        lr, tb = flip_mirrors(f)
+        return flip_word(tb, lr) if q % 2 == 1 else f
+
     if strip is not None:
         if not 1 <= strip <= len(p.strips):
             return
         s = p.strips[strip - 1]
+        s.flip = rotated(s.flip)
         s.turn = (s.turn + q) % 4
         if s.lanes is not None:   # this gel's own lanes (side by side) turn with it, or go when lanes would run the other way
             if q == 2:
@@ -264,6 +270,7 @@ def turn(p: GelProject, strip: Optional[int], quarter_turns: int, w: int, h: int
         else:
             s.top = s.bottom = s.left = s.right = None   # a quarter turn swaps width and height: the crop starts over
     else:
+        p.flip = rotated(p.flip)
         p.turn = (p.turn + q) % 4
         if q != 2:
             p.main_shift = 0.0   # a quarter turn swaps the gel's width and height: where it sat sideways starts over
@@ -302,6 +309,75 @@ def turn(p: GelProject, strip: Optional[int], quarter_turns: int, w: int, h: int
     if strip is None and q == 2:
         p.sync_lane_centers(w, h)
     if strip is not None and q == 2 and 1 <= strip <= len(p.strips) and p.strips[strip - 1].lanes is not None:
+        p.sync_lane_centers(w, h, strip)
+
+
+def flip(p: GelProject, strip: Optional[int], left_right: bool, w: int, h: int) -> None:
+    """Mirrors a gel (strip None = the main image) left-right or top-bottom as shown, after its quarter turns; w×h is its
+    working image. The flip comes before the rotation, so the straightening angle changes sign (a mirrored picture leans
+    the other way); the crop, rows and columns are mirrored about the centre to keep the same region framed, so the shown
+    gel is exactly the old one mirrored in place. Its marks go with the image as in a half turn: a mirror left-right moves
+    dividers, the crop and a strip's columns; one top-bottom moves ticks, names, the dividers' slant, the crop and a
+    strip's rows. Lane labels keep their order."""
+    if strip is not None:
+        if not 1 <= strip <= len(p.strips):
+            return
+        s = p.strips[strip - 1]
+        cur = s.flip
+    else:
+        cur = p.flip
+    lr, tb = flip_mirrors(cur)
+    nxt = flip_word(lr != left_right, tb != (not left_right))
+
+    def negated(deg: float) -> float:
+        return 0.0 if deg == 0 else -deg   # (no -0 in the file)
+
+    def mirrored(lanes) -> None:
+        for d in lanes.dividers:
+            if left_right:
+                d.x_top, d.x_bottom = w - 1 - d.x_top, w - 1 - d.x_bottom
+            else:
+                d.x_top, d.x_bottom, d.dot_y = d.x_bottom, d.x_top, h - 1 - d.dot_y
+        lanes.dividers.sort(key=lambda d: d.x_top + d.x_bottom)
+
+    if strip is not None:
+        s.flip = nxt
+        s.rotate_deg = negated(s.rotate_deg)
+        if s.lanes is not None:
+            mirrored(s.lanes)
+        if left_right:
+            s.left, s.right = (None if s.right is None else w - s.right), (None if s.left is None else w - s.left)
+            l, r = (0.0 if s.left is None else s.left), (float(w) if s.right is None else s.right)
+            if not (l >= 0 and l < r <= w):
+                s.left = s.right = None
+        else:
+            s.top, s.bottom = (None if s.bottom is None else h - s.bottom), (None if s.top is None else h - s.top)
+            t, b = (0.0 if s.top is None else s.top), (float(h) if s.bottom is None else s.bottom)
+            if not (t >= 0 and t < b <= h):
+                s.top = s.bottom = None
+    else:
+        p.flip = nxt
+        p.rotate_deg = negated(p.rotate_deg)
+        if p.crop is not None:
+            r = p.crop
+            p.crop = (PixelRect(w - r.x1, r.y0, w - r.x0, r.y1) if left_right else PixelRect(r.x0, h - r.y1, r.x1, h - r.y0))
+        mirrored(p.lanes)
+    if not left_right:
+        l = p.ladder
+        if l is not None:
+            for b in l.bands:
+                if b.strip == strip:
+                    b.y = h - 1 - b.y
+            if l.unit_y is not None and l.unit_strip == strip:
+                l.unit_y = h - 1 - l.unit_y
+        for a in p.annotations:
+            if a.strip == strip:
+                a.y = h - 1 - a.y
+                if a.y2 is not None:
+                    a.y2 = h - 1 - a.y2
+    if strip is None:
+        p.sync_lane_centers(w, h)
+    elif p.strips[strip - 1].lanes is not None:
         p.sync_lane_centers(w, h, strip)
 
 
